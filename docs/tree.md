@@ -1,6 +1,6 @@
 # worms-marine-taxa-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 03:48:19
+Generated on: 2026-10-21 03:55:17
 
 ```text
 worms-marine-taxa-mcp-server/
@@ -24,6 +24,7 @@ worms-marine-taxa-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -184,6 +185,7 @@ worms-marine-taxa-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
