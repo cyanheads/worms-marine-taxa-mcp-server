@@ -11,10 +11,13 @@ import {
   distributionSchema,
   formatData,
   getWormsService,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   optionalEvidenceTextSchema,
   renderData,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 const filtersSchema = z.object({
   recordStatus: z
@@ -35,14 +38,17 @@ const filtersSchema = z.object({
 });
 export const getDistributionsTool = tool('worms_get_distributions', {
   description:
-    'Retrieve all recorded distributions for an AphiaID from worms_resolve_taxon. Optional local filters combine by conjunction: recordStatus is exact, other filters use case-insensitive whole-value equality. Results retain duplicates and source order; no rows does not prove biological absence or taxon absence.',
+    'Retrieve recorded distributions for an AphiaID from worms_resolve_taxon in byte-budgeted segments; resume nextResultOffset as resultOffset with unchanged selectors and filters. Filters apply to the complete fetched set before pagination and combine by conjunction: recordStatus is exact, others use case-insensitive whole-value equality. Rows retain duplicates and source order; no rows does not prove biological or taxon absence.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-  input: filtersSchema.extend({ aphiaId: aphiaIdSchema }),
+  input: filtersSchema.extend({ aphiaId: aphiaIdSchema, resultOffset: localOffsetSchema }),
   output: z.object({
+    ...localPageFields,
     aphiaId: aphiaIdSchema,
     unfilteredCount: z.number().int().describe('All recorded rows before filtering.'),
     filteredCount: z.number().int().describe('Rows passing every effective filter.'),
-    distributions: z.array(distributionSchema).describe('Complete matching rows in source order.'),
+    distributions: z
+      .array(distributionSchema)
+      .describe('Whole matching rows in this segment, in source order.'),
     attribution: attributionSchema,
   }),
   enrichment: {
@@ -138,7 +144,7 @@ export const getDistributionsTool = tool('worms_get_distributions', {
         )
       );
     });
-    ctx.enrich({
+    const enrichment = {
       echo,
       ...(distributions.length === 0
         ? {
@@ -146,15 +152,23 @@ export const getDistributionsTool = tool('worms_get_distributions', {
               'Call worms_get_distributions without filters to inspect recorded distributions, or worms_get_taxon to check the AphiaID.',
           }
         : {}),
-    });
-    scope.check();
-    return {
-      aphiaId: input.aphiaId,
-      unfilteredCount: rows.length,
-      filteredCount: distributions.length,
-      distributions,
-      attribution: attribution(),
     };
+    ctx.enrich(enrichment);
+    scope.check();
+    return localSlice(
+      distributions,
+      input.resultOffset,
+      (segment, pagination) => ({
+        aphiaId: input.aphiaId,
+        unfilteredCount: rows.length,
+        filteredCount: distributions.length,
+        distributions: segment,
+        ...pagination,
+        attribution: attribution(),
+      }),
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

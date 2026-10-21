@@ -1,5 +1,6 @@
 .env*
 .mcpregistry_*
+**/.DS_Store
 /.claude/
 /.agents/
 /framework-skills/

@@ -12,18 +12,22 @@ import {
   formatData,
   getWormsService,
   itemErrorSchema,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   offsetSchema,
   page,
   pageSchema,
   rankNodeSchema,
   renderData,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 const outputSchema = z.object({
+  ...localPageFields,
   aphiaId: aphiaIdSchema,
   found: z.boolean().describe('Whether classification exists.'),
-  ranks: z.array(rankNodeSchema).describe('Complete root-to-tip lineage.'),
+  ranks: z.array(rankNodeSchema).describe('This segment of the root-to-tip lineage.'),
   children: z
     .array(childSchema)
     .optional()
@@ -35,9 +39,12 @@ const outputSchema = z.object({
 });
 export const getClassificationTool = tool('worms_get_classification', {
   description:
-    'Retrieve the complete root-to-tip classification for an AphiaID from worms_resolve_taxon, retaining missing ranks as unknown. Optionally retrieve one page of direct children; offset and marine/extant filters are inactive unless includeChildren is true. A full 50-row page has uncertain continuation, and nextOffset can return an empty page.',
+    'Retrieve root-to-tip classification and optional direct children for an AphiaID from worms_resolve_taxon. resultOffset indexes lineage followed by fetched children; consume nextResultOffset with unchanged options and upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Missing ranks remain unknown; child offset and filters are inactive without includeChildren. A full fetched 50-row child page has uncertain continuation and can lead to an empty page.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    resultOffset: localOffsetSchema.describe(
+      'Zero-based position in lineage followed by fetched children; keep upstream offset unchanged until nextResultOffset is null.',
+    ),
     aphiaId: aphiaIdSchema,
     includeChildren: z.boolean().default(false).describe('Also fetch one page of direct children.'),
     offset: offsetSchema,
@@ -133,7 +140,7 @@ export const getClassificationTool = tool('worms_get_classification', {
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     const ranks = await service.classification(input.aphiaId, scope);
-    const result: z.infer<typeof outputSchema> = {
+    const result: Omit<z.infer<typeof outputSchema>, keyof typeof localPageFields> = {
       aphiaId: input.aphiaId,
       found: ranks !== null,
       ranks: ranks ?? [],
@@ -157,7 +164,7 @@ export const getClassificationTool = tool('worms_get_classification', {
         result.childrenError = scope.optionalError(error);
       }
     }
-    ctx.enrich({
+    const enrichment = {
       echo: {
         includeChildren: input.includeChildren,
         marineOnly: input.marineOnly,
@@ -170,9 +177,39 @@ export const getClassificationTool = tool('worms_get_classification', {
               'Call worms_get_classification with offset: 1 to return to the first children page; use worms_list_reference with topic: ranks to inspect rank vocabulary.',
           }
         : {}),
-    });
+    };
+    ctx.enrich(enrichment);
     scope.check();
-    return result;
+    const sequence = [
+      ...result.ranks.map((row) => ({ kind: 'rank' as const, row })),
+      ...(result.children ?? []).map((row) => ({ kind: 'child' as const, row })),
+    ];
+    return localSlice(
+      sequence,
+      input.resultOffset,
+      (segment, pagination) => ({
+        ...result,
+        ...pagination,
+        ranks: segment.filter((entry) => entry.kind === 'rank').map((entry) => entry.row),
+        ...(result.children !== undefined
+          ? {
+              children: segment.filter((entry) => entry.kind === 'child').map((entry) => entry.row),
+            }
+          : {}),
+        ...(result.page
+          ? {
+              page: {
+                ...result.page,
+                returnedCount: segment.filter((entry) => entry.kind === 'child').length,
+                nextOffset:
+                  pagination.nextResultOffset === null ? result.page.nextOffset : input.offset,
+              },
+            }
+          : {}),
+      }),
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

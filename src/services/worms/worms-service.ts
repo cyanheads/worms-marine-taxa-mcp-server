@@ -118,6 +118,13 @@ const attributeKeySchema = z.object({
     .nullable()
     .optional(),
 });
+const synonymSchema = taxonRecordSchema.pick({
+  aphiaId: true,
+  scientificname: true,
+  authority: true,
+  status: true,
+  unacceptreason: true,
+});
 
 /** WoRMS service; every method consumes the caller's existing absolute deadline. */
 export class WormsService {
@@ -331,19 +338,7 @@ export class WormsService {
         scope,
         `AphiaSynonymsByAphiaID/${id}`,
         new URLSearchParams({ offset: String(offset) }),
-        (data) =>
-          scan(data, scope, (row) =>
-            checked(
-              taxonRecordSchema.pick({
-                aphiaId: true,
-                scientificname: true,
-                authority: true,
-                status: true,
-                unacceptreason: true,
-              }),
-              normalizeRecord(row),
-            ),
-          ),
+        (data) => scan(data, scope, (row) => checked(synonymSchema, normalizeRecord(row))),
       )) ?? []
     );
   }

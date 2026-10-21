@@ -247,10 +247,6 @@ const isGitRepo = (): boolean => existsSync(path.join(ROOT_DIR, '.git'));
 // ── Project-local config (devcheck.config.json) ─────────────────────
 
 interface DevcheckConfig {
-  depcheck?: {
-    ignores?: string[];
-    ignorePatterns?: string[];
-  };
   outdated?: {
     allowlist?: string[];
   };
@@ -930,19 +926,12 @@ const ALL_CHECKS: Check[] = [
   },
   {
     name: 'Unused Dependencies',
-    flag: '--no-depcheck',
+    flag: '--no-unused-dependencies',
     canFix: false,
     slowCheck: true,
-    getCommand: (ctx) => {
-      const cmd = [path.join(ctx.rootDir, 'node_modules', '.bin', 'depcheck')];
-      const ignores = DEVCHECK_CONFIG.depcheck?.ignores ?? ['@types/*'];
-      if (ignores.length > 0) cmd.push(`--ignores=${ignores.join(',')}`);
-      const patterns = DEVCHECK_CONFIG.depcheck?.ignorePatterns ?? [];
-      if (patterns.length > 0) cmd.push(`--ignore-patterns=${patterns.join(',')}`);
-      return cmd;
-    },
+    getCommand: (ctx) => [path.join(ctx.rootDir, 'node_modules', '.bin', 'knip'), '--dependencies'],
     tip: (c) =>
-      `Remove unused packages with ${c.bold(`${PM_CMD} remove <pkg>`)} or add to ${c.bold('devcheck.config.json')} ignores.`,
+      `Resolve Knip's unused or missing dependencies; document runtime-only references in ${c.bold('knip.jsonc')}.`,
   },
   // Slow checks last (network-bound operations)
   {
@@ -1358,19 +1347,6 @@ async function runCheck(check: Check, ctx: AppContext): Promise<CommandResult> {
   const startTime = performance.now();
   const result = await Shell.exec(command, { cwd: ctx.rootDir });
   const duration = Math.round(performance.now() - startTime);
-
-  // Bun's node-shim (via `bun run`) emits "Registry URL must be" errors when
-  // depcheck encounters `cloudflare:*` virtual-module specifiers in Workers
-  // tests. depcheck.ignores already filters them from the report — strip the
-  // cosmetic stderr so the summary stays clean.
-  if (name === 'Unused Dependencies' && result.stderr) {
-    result.stderr = result.stderr
-      .replace(
-        /error: Registry URL must be http:\/\/ or https:\/\/\nReceived: "cloudflare:[^"]*"\n?/g,
-        '',
-      )
-      .trim();
-  }
 
   const finalResult: CommandResult = {
     ...baseResult,

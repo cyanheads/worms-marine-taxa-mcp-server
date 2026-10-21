@@ -1,16 +1,4 @@
 {
-  "depcheck": {
-    "ignores": [
-      "@types/*",
-      "pino-pretty",
-      "typescript",
-      "tsc-alias",
-      "depcheck",
-      "@cyanheads/mcp-ts-core",
-      "@socketsecurity/bun-security-scanner"
-    ],
-    "ignorePatterns": []
-  },
   "outdated": {
     "allowlist": []
   },

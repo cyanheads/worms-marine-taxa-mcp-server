@@ -9,9 +9,12 @@ import {
   attributionSchema,
   formatData,
   getWormsService,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   renderData,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 const topics = [
   'external_id_types',
@@ -94,9 +97,10 @@ const externalTypes = [
 ] as const;
 export const listReferenceTool = tool('worms_list_reference', {
   description:
-    'List supported external identifier systems, a non-exhaustive taxonomic-status guide, environment-flag semantics, live taxonomic ranks, or live trait definitions. Static topics require no upstream request. IUCN identifiers are not threat categories; null flags mean not recorded. Trait definitions retain complete tree topology.',
+    'List supported external identifier systems, a non-exhaustive taxonomic-status guide, environment-flag semantics, live taxonomic ranks, or live trait definitions. Resume nextResultOffset as resultOffset with the same topic. Identifier codes, statuses, and environment flags are available offline. IUCN identifiers are not threat categories; null flags mean not recorded. Trait definitions retain complete-tree preorder indices across pages; parents may be on earlier pages.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    resultOffset: localOffsetSchema,
     topic: z
       .enum(topics)
       .describe(
@@ -104,10 +108,11 @@ export const listReferenceTool = tool('worms_list_reference', {
       ),
   }),
   output: z.object({
+    ...localPageFields,
     topic: z.enum(topics).describe('Requested reference topic.'),
     entries: z
       .array(entrySchema)
-      .describe('Complete reference entries with topic-specific fields.'),
+      .describe('Whole reference entries in this segment with topic-specific fields.'),
     attribution: attributionSchema,
   }),
   enrichment: { notice: z.string().optional().describe('Guidance for empty live references.') },
@@ -224,13 +229,27 @@ export const listReferenceTool = tool('worms_list_reference', {
         entries = await getWormsService().attributeKeys(scope);
         break;
     }
-    if (entries.length === 0)
-      ctx.enrich({
-        notice:
-          'Call worms_list_reference with the same topic later; use worms_get_traits for recorded taxon attributes or worms_get_classification for actual ranks.',
-      });
+    const enrichment =
+      entries.length === 0
+        ? {
+            notice:
+              'Call worms_list_reference with the same topic later; use worms_get_traits for recorded taxon attributes or worms_get_classification for actual ranks.',
+          }
+        : {};
+    ctx.enrich(enrichment);
     scope.check();
-    return { topic: input.topic, entries, attribution: attribution() };
+    return localSlice(
+      entries,
+      input.resultOffset,
+      (segment, pagination) => ({
+        topic: input.topic,
+        entries: segment,
+        attribution: attribution(),
+        ...pagination,
+      }),
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

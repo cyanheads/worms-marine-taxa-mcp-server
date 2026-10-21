@@ -7,8 +7,13 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   attribution,
   attributionSchema,
+  budgetFields,
+  budgetPrefix,
   formatData,
   getWormsService,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   matchSchema,
   offsetSchema,
   optionalTextSchema,
@@ -17,20 +22,29 @@ import {
   renderData,
   textSchema,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 export const resolveTaxonTool = tool('worms_resolve_taxon', {
   description:
-    'Resolve scientific names exactly by default or explicitly with fuzzy matching, or search one vernacular name. Names default to marine and extant taxa; vernacular searches cannot apply those filters. Process the first 50 names from up to 500, preserving duplicate positions and naming deferredInputs. A full page has uncertain continuation; accepted-name fields identify the accepted taxon without selecting an ambiguous match.',
+    'Resolve exact or explicitly fuzzy scientific names, or search one vernacular name. Names default to marine and extant taxa; vernacular cannot filter. Resume scientific segments with nextInputOffset and nextMatchOffset against unchanged names and options; inputIndex preserves duplicates and partialGroup identifies split groups. For vernacular, consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Full 50-match upstream groups remain completeness-unknown; accepted-name fields do not choose an ambiguous match.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    inputOffset: localOffsetSchema.describe(
+      'Zero-based original scientific names position; inactive for vernacular.',
+    ),
+    matchOffset: localOffsetSchema.describe(
+      'Zero-based match within the scientific-name group at inputOffset; inactive for vernacular.',
+    ),
+    resultOffset: localOffsetSchema.describe(
+      'Zero-based match within the fetched vernacular page; keep upstream offset until consumed. Inactive for scientific names.',
+    ),
     names: z
       .array(textSchema)
       .min(1)
       .max(500)
       .optional()
       .describe(
-        'Scientific names; first 50 processed, remaining values returned in deferredInputs.',
+        'Original scientific names; resubmit unchanged with continuation offsets, preserving duplicates.',
       ),
     vernacular: optionalTextSchema.describe(
       'Common name, mutually exclusive with names; blank means unset.',
@@ -54,11 +68,35 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     offset: offsetSchema,
   }),
   output: z.object({
+    ...budgetFields,
+    nextInputOffset: z
+      .number()
+      .int()
+      .nullable()
+      .describe('Next original names position; resubmit unchanged names and options.'),
+    nextMatchOffset: z
+      .number()
+      .int()
+      .nullable()
+      .describe('Next match position at nextInputOffset; null when names consumed.'),
+    deferredCount: z.number().int().describe('Original input positions not fully consumed.'),
+    resultOffset: localPageFields.resultOffset.optional(),
+    returnedCount: localPageFields.returnedCount.optional(),
+    totalCount: localPageFields.totalCount.optional(),
+    nextResultOffset: localPageFields.nextResultOffset.optional(),
     mode: z.enum(['exact', 'fuzzy', 'vernacular']).describe('Matching mode.'),
     results: z
       .array(
         z
           .object({
+            inputIndex: z.number().int().describe('Original zero-based input position.'),
+            matchOffset: z
+              .number()
+              .int()
+              .describe('Starting match position in the original group.'),
+            partialGroup: z
+              .boolean()
+              .describe('This segment does not contain the entire fetched group.'),
             input: z.string().describe('Submitted name.'),
             matches: z.array(matchSchema).describe('All returned matches in source order.'),
             guidance: z.string().nullable().describe('Recovery guidance for a miss.'),
@@ -66,9 +104,6 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
           .describe('Positional name result.'),
       )
       .describe('One result per processed input.'),
-    deferredInputs: z
-      .array(z.string())
-      .describe('Unprocessed names, preserving order and duplicates.'),
     page: pageSchema.optional().describe('Vernacular page only.'),
     attribution: attributionSchema,
   }),
@@ -159,8 +194,9 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     {
       reason: 'invalid_selector',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Both or neither selector was supplied.',
-      recovery: 'Call worms_resolve_taxon with either names or vernacular, never both.',
+      when: 'Both or neither selector was supplied, or vernacular is exactly "." or "..".',
+      recovery:
+        'Call worms_resolve_taxon with either names or vernacular, never both; vernacular cannot be . or .. (dot-only).',
     },
     {
       reason: 'unsupported_mode_options',
@@ -172,6 +208,8 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
   ],
   async handler(input, ctx) {
     if (Boolean(input.names) === Boolean(input.vernacular)) throw ctx.fail('invalid_selector');
+    if (input.vernacular === '.' || input.vernacular === '..')
+      throw ctx.fail('invalid_selector', 'vernacular cannot be . or ..');
     if (
       (input.names && input.offset !== 1) ||
       (input.vernacular && (input.fuzzy || !input.marineOnly || !input.extantOnly))
@@ -180,32 +218,55 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     if (input.vernacular) {
+      const vernacular = input.vernacular;
       const matches = await service.vernacularSearch(input.vernacular, input.offset, scope);
-      ctx.enrich({
+      const enrichment = {
         echo: { marineOnly: null, extantOnly: null, fuzzy: false, offset: input.offset },
         ...(matches.length === 0
           ? { notice: 'Call worms_resolve_taxon with a broader vernacular or offset: 1.' }
           : {}),
-      });
-      scope.check();
-      return {
-        mode: 'vernacular' as const,
-        results: [{ input: input.vernacular, matches, guidance: null }],
-        deferredInputs: [],
-        page: page(input.offset, matches.length),
-        attribution: attribution(),
       };
+      ctx.enrich(enrichment);
+      scope.check();
+      return localSlice(
+        matches,
+        input.resultOffset,
+        (segment, pagination) => ({
+          mode: 'vernacular' as const,
+          results: [
+            {
+              input: vernacular,
+              inputIndex: 0,
+              matchOffset: input.resultOffset,
+              partialGroup: segment.length !== matches.length,
+              matches: segment,
+              guidance: null,
+            },
+          ],
+          ...pagination,
+          nextInputOffset: null,
+          nextMatchOffset: null,
+          deferredCount: 0,
+          page: {
+            ...page(input.offset, matches.length),
+            returnedCount: segment.length,
+            nextOffset:
+              pagination.nextResultOffset === null
+                ? page(input.offset, matches.length).nextOffset
+                : input.offset,
+          },
+          attribution: attribution(),
+        }),
+        enrichment,
+        () => scope.check(),
+      );
     }
     const names = input.names ?? [];
-    const processed = names.slice(0, 50);
-    const deferredInputs = names.slice(50);
-    const groups = await service.names(
-      processed,
-      input.fuzzy,
-      input.marineOnly,
-      input.extantOnly,
-      scope,
-    );
+    const windowStart = Math.floor(input.inputOffset / 50) * 50;
+    const processed = names.slice(windowStart, windowStart + 50);
+    const groups = processed.length
+      ? await service.names(processed, input.fuzzy, input.marineOnly, input.extantOnly, scope)
+      : [];
     const results = processed.map((name, index) => {
       const matches = groups[index] ?? [];
       const guidance = matches.length
@@ -218,19 +279,16 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
               ? ['Call worms_resolve_taxon with marineOnly: false to include non-marine taxa.']
               : []),
           ].join(' ');
-      return { input: name, matches, guidance };
+      return { input: name, inputIndex: windowStart + index, matches, guidance };
     });
     const notices = [
-      ...(deferredInputs.length
-        ? ['Submit deferredInputs to worms_resolve_taxon to process the remaining names.']
-        : []),
       ...(groups.some((group) => group.length === 50)
         ? [
             'A scientific-name group returned 50 matches; completeness is unknown. Narrow the scientific name with worms_resolve_taxon.',
           ]
         : []),
     ];
-    ctx.enrich({
+    const enrichment = {
       echo: {
         marineOnly: input.marineOnly,
         extantOnly: input.extantOnly,
@@ -238,14 +296,65 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
         ...(input.fuzzy ? { matchAuthority: false } : {}),
       },
       ...(notices.length ? { notice: notices.join(' ') } : {}),
-    });
-    scope.check();
-    return {
-      mode: input.fuzzy ? ('fuzzy' as const) : ('exact' as const),
-      results,
-      deferredInputs,
-      attribution: attribution(),
     };
+    ctx.enrich(enrichment);
+    scope.check();
+    const units = results.flatMap<{
+      group: (typeof results)[number];
+      match: z.infer<typeof matchSchema> | null;
+      matchIndex: number;
+    }>((group) => {
+      if (group.inputIndex < input.inputOffset) return [];
+      const start = group.inputIndex === input.inputOffset ? input.matchOffset : 0;
+      if (!group.matches.length) return [{ group, match: null, matchIndex: 0 }];
+      return group.matches
+        .slice(start)
+        .map((match, index) => ({ group, match, matchIndex: start + index }));
+    });
+    return budgetPrefix(
+      units.length,
+      (take, budget) => {
+        const selected = units.slice(0, take);
+        const emitted: {
+          input: string;
+          inputIndex: number;
+          matches: z.infer<typeof matchSchema>[];
+          guidance: string | null;
+          matchOffset: number;
+          partialGroup: boolean;
+        }[] = [];
+        for (const unit of selected) {
+          const previous = emitted.at(-1);
+          const entry =
+            previous?.inputIndex === unit.group.inputIndex
+              ? previous
+              : { ...unit.group, matches: [], matchOffset: unit.matchIndex, partialGroup: false };
+          if (entry !== previous) emitted.push(entry);
+          if (unit.match) entry.matches.push(unit.match);
+          entry.partialGroup =
+            entry.matchOffset > 0 || entry.matches.length < unit.group.matches.length;
+        }
+        const last = selected.at(-1);
+        const moreMatches = last && last.matchIndex + 1 < last.group.matches.length;
+        const next = last
+          ? moreMatches
+            ? last.group.inputIndex
+            : last.group.inputIndex + 1
+          : Math.min(names.length, input.inputOffset + (units.length ? 0 : 1));
+        return {
+          mode: input.fuzzy ? ('fuzzy' as const) : ('exact' as const),
+          results: emitted,
+          nextInputOffset: next < names.length ? next : null,
+          nextMatchOffset:
+            next < names.length ? (moreMatches && last ? last.matchIndex + 1 : 0) : null,
+          deferredCount: Math.max(0, names.length - next),
+          attribution: attribution(),
+          ...budget,
+        };
+      },
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

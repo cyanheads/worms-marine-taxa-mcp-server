@@ -36,4 +36,29 @@ describe('lossless Markdown data', () => {
     for (let index = 0; index < 1500; index++) tip = (tip as unknown[])[0];
     expect(tip).toEqual({ leaf: 'complete' });
   });
+  it('keeps a full sparse taxon batch below 66 KiB without losing evidence', () => {
+    const value = {
+      results: Array.from({ length: 50 }, (_, index) => ({
+        requestedAphiaId: 1000 + index,
+        found: true,
+        record: {
+          aphiaId: 1000 + index,
+          scientificname: 'Example taxon',
+          authority: 'Author, 2026',
+          status: 'accepted',
+          url: `https://www.marinespecies.org/aphia.php?p=taxdetails&id=${1000 + index}`,
+          citation: 'Line one\r\n\nLine two',
+          isMarine: true,
+          isExtinct: null,
+        },
+        guidance: null,
+      })),
+      deferredInputs: [],
+    };
+    const content = formatData(value);
+    expect(decodeContent({ content })).toEqual(value);
+    expect(content.reduce((bytes, block) => bytes + Buffer.byteLength(block.text), 0)).toBeLessThan(
+      66 * 1024,
+    );
+  });
 });

@@ -72,7 +72,7 @@ export const distributionSchema = z
     latitude: z.number().finite().nullable().optional().describe('Recorded WGS84 latitude.'),
     longitude: z.number().finite().nullable().optional().describe('Recorded WGS84 longitude.'),
   })
-  .describe('Sparse recorded distribution evidence.');
+  .describe('Recorded distribution evidence; omitted or null fields are unknown.');
 export const traitSchema = z
   .object({
     nodeIndex: z.number().int().describe('Preorder node index.'),
@@ -90,7 +90,7 @@ export const traitSchema = z
     inheritedFrom: evidenceId.describe('Known different source taxon, otherwise null.'),
     parentType: sparseText.describe('Immediate parent measurement type; null at roots.'),
   })
-  .describe('Trait evidence node with complete topology.');
+  .describe('Trait evidence node with complete topology; omitted or null facts are unknown.');
 export const taxonRecordSchema = z
   .object({
     aphiaId: aphiaIdSchema,
@@ -122,7 +122,7 @@ export const taxonRecordSchema = z
     isExtinct: z.boolean().nullable().optional().describe('Extinct flag.'),
     matchType: sparseText.describe('Upstream match type.'),
   })
-  .describe('Complete documented Aphia record.');
+  .describe('Documented Aphia record; omitted or null scientific facts and flags are unknown.');
 export type TaxonRecord = z.infer<typeof taxonRecordSchema>;
 export const matchSchema = taxonRecordSchema
   .pick({

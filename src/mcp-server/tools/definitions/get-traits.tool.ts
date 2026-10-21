@@ -10,15 +10,19 @@ import {
   attributionSchema,
   formatData,
   getWormsService,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   renderData,
   traitSchema,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 export const getTraitsTool = tool('worms_get_traits', {
   description:
-    'Retrieve all recorded attributes for an AphiaID from worms_resolve_taxon, including inherited attributes by default. Rows retain preorder topology, original values, references and inheritance markers. Missing traits do not prove biological absence; IUCN list membership is not a threat category.',
+    'Retrieve recorded attributes for an AphiaID from worms_resolve_taxon, including inherited attributes by default. Resume nextResultOffset as resultOffset with unchanged selectors and options. Whole rows retain original preorder nodeIndex and parentIndex across pages; parents may be on earlier pages. Values, references and inheritance markers remain unchanged. Missing traits do not prove biological absence; IUCN list membership is not a threat category.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    resultOffset: localOffsetSchema,
     aphiaId: aphiaIdSchema,
     includeInherited: z
       .boolean()
@@ -26,8 +30,11 @@ export const getTraitsTool = tool('worms_get_traits', {
       .describe('Include attributes inherited from higher taxa; default true.'),
   }),
   output: z.object({
+    ...localPageFields,
     aphiaId: aphiaIdSchema,
-    traits: z.array(traitSchema).describe('Complete preorder attribute evidence.'),
+    traits: z
+      .array(traitSchema)
+      .describe('This preorder segment; indices refer to the complete original tree.'),
     attribution: attributionSchema,
   }),
   enrichment: {
@@ -106,7 +113,7 @@ export const getTraitsTool = tool('worms_get_traits', {
   async handler(input, ctx) {
     using scope = new WormsScope(ctx);
     const traits = await getWormsService().traits(input.aphiaId, input.includeInherited, scope);
-    ctx.enrich({
+    const enrichment = {
       echo: { includeInherited: input.includeInherited },
       ...(traits.length === 0
         ? {
@@ -115,9 +122,21 @@ export const getTraitsTool = tool('worms_get_traits', {
               : 'Call worms_get_traits with includeInherited: true to include higher-rank attributes; call worms_list_reference with topic: trait_types to inspect definitions.',
           }
         : {}),
-    });
+    };
+    ctx.enrich(enrichment);
     scope.check();
-    return { aphiaId: input.aphiaId, traits, attribution: attribution() };
+    return localSlice(
+      traits,
+      input.resultOffset,
+      (segment, pagination) => ({
+        aphiaId: input.aphiaId,
+        traits: segment,
+        attribution: attribution(),
+        ...pagination,
+      }),
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

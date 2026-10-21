@@ -9,7 +9,14 @@ import { crosswalkIdTool } from '@/mcp-server/tools/definitions/crosswalk-id.too
 import { getDistributionsTool } from '@/mcp-server/tools/definitions/get-distributions.tool.js';
 import { getSynonymsTool } from '@/mcp-server/tools/definitions/get-synonyms.tool.js';
 import { getTraitsTool } from '@/mcp-server/tools/definitions/get-traits.tool.js';
-import { expectParity, fakeFetch, record, settle, setupWorms } from '../helpers/worms.js';
+import {
+  collectLocal,
+  expectParity,
+  fakeFetch,
+  record,
+  settle,
+  setupWorms,
+} from '../helpers/worms.js';
 
 const externalTypes = [
   'algaebase',
@@ -60,9 +67,15 @@ describe('synonym evidence', () => {
         validAphiaId: 2,
         page: {
           offset: 51,
-          returnedCount: count,
+          returnedCount: (result.structuredContent as { synonyms: unknown[] }).synonyms.length,
           hasMore: count === 50 ? null : false,
-          nextOffset: count === 50 ? 101 : null,
+          nextOffset:
+            (result.structuredContent as { nextResultOffset: number | null }).nextResultOffset !==
+            null
+              ? 51
+              : count === 50
+                ? 101
+                : null,
         },
       });
       expect(network.calls).toHaveLength(2);
@@ -261,10 +274,13 @@ describe('trait evidence', () => {
     for (let depth = 0; depth < 1100; depth++)
       node = { measurementTypeID: `${depth}`, children: [node] };
     fakeFetch(() => Response.json([node]));
-    const result = await settle(runToolContract(getTraitsTool, { aphiaId: 1 }));
-    expectParity(result);
-    expect(result.structuredContent).toMatchObject({
-      traits: expect.arrayContaining([
+    const traits = await collectLocal(
+      (resultOffset) => runToolContract(getTraitsTool, { aphiaId: 1, resultOffset }),
+      'traits',
+    );
+    expect(traits).toHaveLength(1101);
+    expect(traits).toEqual(
+      expect.arrayContaining([
         {
           nodeIndex: 1100,
           parentIndex: 1099,
@@ -273,7 +289,7 @@ describe('trait evidence', () => {
           inheritedFrom: null,
         },
       ]),
-    });
+    );
   });
   it.each([true, false])('keeps empty inheritance=%s guidance honest', async (includeInherited) => {
     fakeFetch((url) => {

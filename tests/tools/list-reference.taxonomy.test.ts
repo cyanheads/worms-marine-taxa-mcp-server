@@ -9,7 +9,14 @@ import { getTaxonTool } from '@/mcp-server/tools/definitions/get-taxon.tool.js';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
 import { resolveTaxonTool } from '@/mcp-server/tools/definitions/resolve-taxon.tool.js';
 import { failures } from '@/services/worms/index.js';
-import { expectParity, fakeFetch, record, settle, setupWorms } from '../helpers/worms.js';
+import {
+  collectLocal,
+  expectParity,
+  fakeFetch,
+  record,
+  settle,
+  setupWorms,
+} from '../helpers/worms.js';
 
 beforeEach(setupWorms);
 afterEach(() => {
@@ -151,10 +158,14 @@ describe('taxon resolution', () => {
     });
     const result = await settle(runToolContract(resolveTaxonTool, { names }));
     expectParity(result);
-    expect(result.structuredContent).toMatchObject({
-      results: names.slice(0, 50).map((input) => ({ input, matches: [] })),
-      deferredInputs: names.slice(50),
-    });
+    const data = result.structuredContent as {
+      results: { input: string; inputIndex: number }[];
+      nextInputOffset: number;
+      deferredCount: number;
+    };
+    expect(data.results.map((row) => row.input)).toEqual(names.slice(0, data.results.length));
+    expect(data.nextInputOffset).toBe(data.results.length);
+    expect(data.deferredCount).toBe(500 - data.results.length);
     expect(network.calls).toHaveLength(1);
   });
   it('preserves duplicate positions, null misses, sparse matches, and defaults', async () => {
@@ -213,9 +224,9 @@ describe('taxon resolution', () => {
     );
     expectParity(result);
     expect(result.structuredContent).toMatchObject({
-      deferredInputs: names.slice(50),
       results: expect.any(Array),
-      notice: expect.stringContaining('deferredInputs'),
+      nextInputOffset: expect.any(Number),
+      deferredCount: expect.any(Number),
       echo: { matchAuthority: false },
     });
   });
@@ -274,10 +285,19 @@ describe('taxon retrieval', () => {
     });
     const result = await settle(runToolContract(getTaxonTool, { aphiaIds: ids }));
     expectParity(result);
-    expect(result.structuredContent).toMatchObject({
-      results: ids.slice(0, 50).map((id) => ({ requestedAphiaId: id, record: { aphiaId: id } })),
-      deferredInputs: ids.slice(50),
-    });
+    const data = result.structuredContent as {
+      results: { requestedAphiaId: number; record: { aphiaId: number } }[];
+      nextInputOffset: number;
+      deferredCount: number;
+    };
+    expect(data.results.map((row) => row.requestedAphiaId)).toEqual(
+      ids.slice(0, data.results.length),
+    );
+    expect(data.results.map((row) => row.record.aphiaId)).toEqual(
+      ids.slice(0, data.results.length),
+    );
+    expect(data.nextInputOffset).toBe(data.results.length);
+    expect(data.deferredCount).toBe(500 - data.results.length);
     expect(network.calls).toHaveLength(1);
   });
   it('retains the primary record after an exhausted optional request timeout', async () => {
@@ -365,10 +385,14 @@ describe('taxon retrieval', () => {
     });
     const result = await settle(runToolContract(getTaxonTool, { aphiaIds: ids }));
     expectParity(result);
-    expect(result.structuredContent).toMatchObject({
-      deferredInputs: ids.slice(50),
-      results: ids.slice(0, 50).map((id) => ({ requestedAphiaId: id, found: false })),
-    });
+    const data = result.structuredContent as {
+      results: { requestedAphiaId: number; found: boolean }[];
+      nextInputOffset: number;
+    };
+    expect(data.results).toMatchObject(
+      ids.slice(0, data.results.length).map((id) => ({ requestedAphiaId: id, found: false })),
+    );
+    expect(data.nextInputOffset).toBe(data.results.length);
     expect(network.calls).toHaveLength(1);
   });
   it('retrieves optional sparse vernaculars through a second paced request', async () => {
@@ -488,12 +512,12 @@ describe('classification', () => {
     for (let index = 1200; index > 0; index--)
       tree = { AphiaID: index, scientificname: index === 2 ? null : `Node ${index}`, child: tree };
     fakeFetch(() => Response.json(tree));
-    const result = await settle(runToolContract(getClassificationTool, { aphiaId: 1200 }));
-    expectParity(result);
-    const ranks = (result.structuredContent as { ranks: unknown[] }).ranks;
+    const ranks = await collectLocal(
+      (resultOffset) => runToolContract(getClassificationTool, { aphiaId: 1200, resultOffset }),
+      'ranks',
+    );
     expect(ranks).toHaveLength(1200);
     expect(ranks[1199]).toEqual({ aphiaId: 1200, scientificname: 'Node 1200' });
-    expect(result.structuredContent).not.toHaveProperty('page');
   });
   it.each([0, 49, 50])(
     'fetches exactly one %i-row child page with explicit filters',

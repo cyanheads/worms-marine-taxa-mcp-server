@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+  "entry": ["src/index.ts", "scripts/*.ts", "tests/**/*.ts"],
+  "project": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "*.config.ts"],
+  // The framework resolves the logging transport at runtime; Bun loads its scanner from bunfig.toml.
+  "ignoreDependencies": ["pino-pretty", "@socketsecurity/bun-security-scanner"],
+  // MCP Registry publishing uses a separately installed Go CLI.
+  "ignoreBinaries": ["mcp-publisher"]
+}

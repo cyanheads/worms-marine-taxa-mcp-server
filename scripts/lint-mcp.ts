@@ -29,20 +29,10 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
-// Import validateDefinitions — resolve from package or local source
+// Import validateDefinitions from the installed framework
 // ---------------------------------------------------------------------------
 
-let validateDefinitions: typeof import('../src/linter/validate.js').validateDefinitions;
-
-try {
-  // Consumer path: installed as a dependency
-  const pkg = await import('@cyanheads/mcp-ts-core/linter');
-  validateDefinitions = pkg.validateDefinitions;
-} catch {
-  // Framework path: running from the framework repo itself
-  const local = await import('../src/linter/validate.js');
-  validateDefinitions = local.validateDefinitions;
-}
+import { validateDefinitions } from '@cyanheads/mcp-ts-core/linter';
 
 // ---------------------------------------------------------------------------
 // Definition detection (duck-typing)

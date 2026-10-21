@@ -8,17 +8,21 @@ import {
   aphiaIdSchema,
   attribution,
   attributionSchema,
+  budgetPrefix,
   crosswalkFailure,
   externalTypeSchema,
   externalTypes,
   formatData,
   getWormsService,
   itemErrorSchema,
+  localOffsetSchema,
+  localPageFields,
+  localSlice,
   optionalEvidenceTextSchema,
   renderData,
   taxonRecordSchema,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 const failedTypeSchema = z
   .object({
@@ -27,6 +31,7 @@ const failedTypeSchema = z
   })
   .describe('Failed identifier system.');
 const outputSchema = z.object({
+  ...localPageFields,
   direction: z.enum(['forward', 'reverse']).describe('Selected crosswalk direction.'),
   aphiaId: aphiaIdSchema
     .nullable()
@@ -39,7 +44,19 @@ const outputSchema = z.object({
       externalTypeSchema,
       z.array(z.string().describe('Opaque identifier.')).describe('IDs in upstream order.'),
     )
-    .describe('Answered types only; empty arrays are successful absence.'),
+    .describe(
+      'This segment of answered types; consult typeTotals to distinguish empty evidence from IDs on another segment.',
+    ),
+  typeTotals: z
+    .partialRecord(
+      externalTypeSchema,
+      z
+        .number()
+        .int()
+        .nonnegative()
+        .describe('Complete fetched identifier count for this answered type.'),
+    )
+    .describe('Answered types only; zero means successful absence; failed types are omitted.'),
   failedTypes: z.array(failedTypeSchema).describe('Failed types in fixed vocabulary order.'),
   record: taxonRecordSchema.nullable().describe('Reverse matched record only.'),
   guidance: z
@@ -50,9 +67,12 @@ const outputSchema = z.object({
 });
 export const crosswalkIdTool = tool('worms_crosswalk_id', {
   description:
-    'Crosswalk an AphiaID from worms_resolve_taxon to one or all nine external identifier systems, or reverse an externalId with its required type to a full taxon record. Supply exactly one selector. IDs remain opaque strings, including leading zeros and LSIDs. Forward absence cannot establish taxon absence; partial outages name failed types. IUCN identifiers are not threat categories.',
+    'Crosswalk an AphiaID from worms_resolve_taxon to one or all nine external identifier systems, or reverse an externalId with required type to a full taxon record. Supply exactly one selector. Forward resultOffset indexes whole identifiers across types in requested order; resume nextResultOffset with unchanged selectors. typeTotals distinguishes successful absence from IDs on another segment; failed types remain separate. IDs stay opaque, including leading zeros and LSIDs. No IDs cannot establish taxon absence; IUCN identifiers are not threat categories.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    resultOffset: localOffsetSchema.describe(
+      'Zero-based forward identifier position across types in requested order; repeat unchanged selectors. Inactive for reverse lookup.',
+    ),
     aphiaId: aphiaIdSchema
       .optional()
       .describe('Forward selector; mutually exclusive with externalId.'),
@@ -151,8 +171,9 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     {
       reason: 'invalid_selector',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Both or neither selector supplied.',
-      recovery: 'Call worms_crosswalk_id with either aphiaId or externalId and type.',
+      when: 'Both or neither selector supplied, or externalId is exactly "." or "..".',
+      recovery:
+        'Call worms_crosswalk_id with either aphiaId or externalId and type; externalId cannot be . or .. (dot-only).',
       retryable: false,
     },
     {
@@ -172,23 +193,37 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     const guidance =
       'Call worms_list_reference with topic: external_id_types to check the identifier system, or worms_resolve_taxon with a scientific name.';
     if (input.externalId !== undefined) {
+      if (input.externalId === '.' || input.externalId === '..')
+        throw ctx.fail('invalid_selector', 'externalId cannot be . or ..');
       if (input.type === undefined)
         throw ctx.fail('missing_external_type', 'Reverse lookup requires type.');
       const record = await service.externalRecord(input.externalId, input.type, scope);
-      ctx.enrich({ echo: { type: input.type, externalId: input.externalId } });
+      const enrichment = { echo: { type: input.type, externalId: input.externalId } };
+      ctx.enrich(enrichment);
       scope.check();
-      return {
-        direction: 'reverse' as const,
-        aphiaId: record?.aphiaId ?? null,
-        externalId: input.externalId,
-        type: input.type,
-        found: record !== null,
-        ids: {},
-        failedTypes: [],
-        record,
-        guidance: record === null ? guidance : null,
-        attribution: attribution(),
-      };
+      return budgetPrefix(
+        1,
+        (_take, budget) => ({
+          resultOffset: input.resultOffset,
+          returnedCount: record ? 1 : 0,
+          totalCount: record ? 1 : 0,
+          nextResultOffset: null,
+          ...budget,
+          direction: 'reverse' as const,
+          aphiaId: record?.aphiaId ?? null,
+          externalId: input.externalId,
+          type: input.type,
+          found: record !== null,
+          ids: {},
+          typeTotals: {},
+          failedTypes: [],
+          record,
+          guidance: record === null ? guidance : null,
+          attribution: attribution(),
+        }),
+        enrichment,
+        () => scope.check(),
+      );
     }
     const id = input.aphiaId;
     if (id === undefined)
@@ -215,26 +250,48 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       if (firstFailure instanceof McpError) throw crosswalkFailure(firstFailure, failedTypes);
       throw firstFailure;
     }
-    ctx.enrich({
+    const enrichment = {
       echo: { requestedTypes },
       ...(failedTypes.length
         ? {
             notice: `Identifier lookups failed for ${failedTypes.map((entry) => entry.type).join(', ')}; call worms_crosswalk_id with one failed type to retry.`,
           }
         : {}),
-    });
-    scope.check();
-    return {
-      direction: 'forward' as const,
-      aphiaId: id,
-      ...(input.type !== undefined ? { type: input.type } : {}),
-      found: null,
-      ids,
-      failedTypes,
-      record: null,
-      guidance: Object.values(ids).every((values) => values.length === 0) ? guidance : null,
-      attribution: attribution(),
     };
+    ctx.enrich(enrichment);
+    scope.check();
+    const sequence = requestedTypes.flatMap((type) =>
+      (ids[type] ?? []).map((identifier) => ({ type, identifier })),
+    );
+    return localSlice(
+      sequence,
+      input.resultOffset,
+      (segment, pagination) => {
+        const pagedIds = Object.fromEntries(
+          Object.keys(ids).map((type) => [
+            type,
+            segment.filter((entry) => entry.type === type).map((entry) => entry.identifier),
+          ]),
+        ) as typeof ids;
+        return {
+          ...pagination,
+          direction: 'forward' as const,
+          aphiaId: id,
+          ...(input.type !== undefined ? { type: input.type } : {}),
+          found: null,
+          ids: pagedIds,
+          typeTotals: Object.fromEntries(
+            Object.entries(ids).map(([type, values]) => [type, values.length]),
+          ),
+          failedTypes,
+          record: null,
+          guidance: Object.values(ids).every((values) => values.length === 0) ? guidance : null,
+          attribution: attribution(),
+        };
+      },
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

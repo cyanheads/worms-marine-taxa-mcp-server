@@ -8,17 +8,21 @@ import {
   aphiaIdSchema,
   attribution,
   attributionSchema,
+  budgetFields,
+  budgetPrefix,
   formatData,
   getWormsService,
   itemErrorSchema,
+  localOffsetSchema,
   renderData,
   taxonRecordSchema,
   vernacularSchema,
   WormsScope,
-} from '@/services/worms/index.js';
+} from '../../../services/worms/index.js';
 
 const resultSchema = z
   .object({
+    inputIndex: z.number().int().describe('Original zero-based submitted ID position.'),
     requestedAphiaId: aphiaIdSchema,
     found: z.boolean().describe('Whether a record exists.'),
     record: taxonRecordSchema.nullable().describe('Full documented taxon record, or null.'),
@@ -32,22 +36,39 @@ const resultSchema = z
   .describe('Positional taxon retrieval result.');
 export const getTaxonTool = tool('worms_get_taxon', {
   description:
-    'Retrieve full Aphia records by IDs from worms_resolve_taxon. Process the first 50 of up to 500 IDs and return deferredInputs, preserving order, duplicates, and missing positions. Optionally include vernacular names for exactly one submitted ID; enrichment failure retains the primary record. Unknown scientific facts remain omitted or null.',
+    'Retrieve full Aphia records by IDs from worms_resolve_taxon in byte-budgeted segments. Resume nextInputOffset as inputOffset using unchanged aphiaIds and options; inputIndex preserves duplicate and missing positions. includeVernaculars requires one submitted ID; resume nextVernacularOffset as vernacularOffset, repeating the full primary record. Optional failure retains that record; unknown facts remain omitted or null.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    inputOffset: localOffsetSchema,
+    vernacularOffset: localOffsetSchema.describe(
+      'Zero-based common-name position for the singleton ID; repeat unchanged options. Inactive without includeVernaculars.',
+    ),
     aphiaIds: z
       .array(aphiaIdSchema)
       .min(1)
       .max(500)
-      .describe('AphiaIDs; first 50 processed, remaining entries returned in deferredInputs.'),
+      .describe(
+        'Original AphiaIDs in order; resubmit unchanged with inputOffset, without deduplicating.',
+      ),
     includeVernaculars: z
       .boolean()
       .default(false)
       .describe('Retrieve common names; requires exactly one submitted ID.'),
   }),
   output: z.object({
+    ...budgetFields,
+    nextInputOffset: z
+      .number()
+      .int()
+      .nullable()
+      .describe('Resume position in the unchanged original aphiaIds; null when consumed.'),
+    deferredCount: z.number().int().describe('Number of original ID positions still deferred.'),
+    nextVernacularOffset: z
+      .number()
+      .int()
+      .nullable()
+      .describe('Resume common names for the same singleton record; null when consumed.'),
     results: z.array(resultSchema).describe('One positional result per processed ID.'),
-    deferredInputs: z.array(aphiaIdSchema).describe('Unprocessed IDs in original order.'),
     attribution: attributionSchema,
   }),
   enrichment: {
@@ -135,10 +156,10 @@ export const getTaxonTool = tool('worms_get_taxon', {
     if (input.includeVernaculars && input.aphiaIds.length !== 1) throw ctx.fail('vernacular_batch');
     using scope = new WormsScope(ctx);
     const service = getWormsService();
-    const ids = input.aphiaIds.slice(0, 50);
-    const deferredInputs = input.aphiaIds.slice(50);
-    const records = await service.records(ids, scope);
+    const ids = input.aphiaIds.slice(input.inputOffset, input.inputOffset + 50);
+    const records = ids.length ? await service.records(ids, scope) : [];
     const results: z.infer<typeof resultSchema>[] = ids.map((id, index) => ({
+      inputIndex: input.inputOffset + index,
       requestedAphiaId: id,
       found: records[index] !== null,
       record: records[index] ?? null,
@@ -154,14 +175,36 @@ export const getTaxonTool = tool('worms_get_taxon', {
         first.vernacularError = scope.optionalError(error);
       }
     }
-    ctx.enrich({
+    const enrichment = {
       echo: { includeVernaculars: input.includeVernaculars },
-      ...(deferredInputs.length
-        ? { notice: 'Submit deferredInputs to worms_get_taxon to process the remaining IDs.' }
-        : {}),
-    });
+    };
+    ctx.enrich(enrichment);
     scope.check();
-    return { results, deferredInputs, attribution: attribution() };
+    const vernaculars = first?.vernaculars;
+    const remaining = vernaculars?.slice(input.vernacularOffset);
+    return budgetPrefix(
+      remaining?.length ?? results.length,
+      (take, budget) => {
+        const nextVernacularOffset =
+          remaining && take < remaining.length ? input.vernacularOffset + take : null;
+        const emitted =
+          remaining && first
+            ? [{ ...first, vernaculars: remaining.slice(0, take) }]
+            : results.slice(0, take);
+        const next =
+          nextVernacularOffset !== null ? input.inputOffset : input.inputOffset + emitted.length;
+        return {
+          results: emitted,
+          attribution: attribution(),
+          ...budget,
+          nextInputOffset: next < input.aphiaIds.length ? next : null,
+          deferredCount: Math.max(0, input.aphiaIds.length - next),
+          nextVernacularOffset,
+        };
+      },
+      enrichment,
+      () => scope.check(),
+    );
   },
   format: formatData,
 });

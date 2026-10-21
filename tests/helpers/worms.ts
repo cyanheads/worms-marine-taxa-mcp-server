@@ -120,3 +120,23 @@ export function expectParity(result: CallToolResult) {
   expect(result.isError).not.toBe(true);
   expect(decodeContent(result)).toEqual(result.structuredContent);
 }
+
+/** Follow explicit local selectors and verify each complete paired-surface segment. */
+export async function collectLocal(
+  call: (offset: number) => Promise<CallToolResult>,
+  field: string,
+) {
+  const rows: unknown[] = [];
+  let offset = 0;
+  for (;;) {
+    const result = await settle(call(offset));
+    expectParity(result);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
+    const data = result.structuredContent as Record<string, unknown>;
+    rows.push(...(data[field] as unknown[]));
+    const next = data.nextResultOffset as number | null;
+    if (next === null) return rows;
+    expect(next).toBeGreaterThan(offset);
+    offset = next;
+  }
+}

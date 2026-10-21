@@ -11,22 +11,17 @@ export function escapeMarkdown(value: string): string {
 /** Render every scalar and container iteratively; JSON tokens retain line endings. */
 export function renderData(value: unknown, root = '$'): string {
   const lines: string[] = [];
-  const stack: { path: string; value: unknown; end?: boolean }[] = [{ path: root, value }];
+  const stack: { path: string; value: unknown }[] = [{ path: root, value }];
   while (stack.length) {
     const item = stack.pop();
     if (!item) break;
     const { path, value: current } = item;
     const prefix = escapeMarkdown(JSON.stringify(path));
-    if (item.end) {
-      lines.push(`${prefix} end`);
-      continue;
-    }
     if (current !== null && typeof current === 'object') {
       const entries = Array.isArray(current)
         ? current.map((entry, index) => [index, entry] as const)
         : Object.entries(current);
       lines.push(`${prefix} ${Array.isArray(current) ? 'array' : 'object'} ${entries.length}`);
-      stack.push({ path, value: null, end: true });
       for (let index = entries.length - 1; index >= 0; index--) {
         const entry = entries[index];
         if (entry) stack.push({ path: `${path}[${JSON.stringify(entry[0])}]`, value: entry[1] });

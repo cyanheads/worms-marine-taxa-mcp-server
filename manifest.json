@@ -4,15 +4,13 @@
   "version": "0.1.0",
   "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads",
-    "email": "casey@caseyjhand.com",
-    "url": "https://caseyjhand.com"
+    "name": "cyanheads"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/cyanheads/worms-marine-taxa-mcp-server"
   },
-  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
+  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server#readme",
   "license": "Apache-2.0",
   "server": {
     "type": "node",

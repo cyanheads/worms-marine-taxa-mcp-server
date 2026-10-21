@@ -2,7 +2,7 @@
  * @fileoverview Build script with progress feedback and output stats.
  * @module scripts/build
  *
- * Wraps tsc + tsc-alias with timing, file counts, and size reporting.
+ * Wraps native tsc with timing, file counts, and size reporting.
  * Exits non-zero on failure with captured compiler output.
  *
  * @example
@@ -128,13 +128,6 @@ async function main() {
   // Step 1: tsc
   const tsc = await exec([join(ROOT_DIR, 'node_modules', '.bin', 'tsc'), '-p', project], 'tsc');
   if (!tsc.ok) process.exit(1);
-
-  // Step 2: tsc-alias
-  const alias = await exec(
-    [join(ROOT_DIR, 'node_modules', '.bin', 'tsc-alias'), '-p', project],
-    'tsc-alias',
-  );
-  if (!alias.ok) process.exit(1);
 
   const totalMs = Math.round(performance.now() - totalStart);
 

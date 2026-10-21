@@ -4,14 +4,14 @@
   "version": "0.1.0",
   "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "Casey Hand",
+    "name": "cyanheads",
     "email": "casey@caseyjhand.com",
-    "url": "https://caseyjhand.com"
+    "url": "https://github.com/cyanheads"
   },
-  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
+  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server#readme",
   "repository": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "worms", "marine-biology", "taxonomy", "aphia", "biodiversity"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "bun", "stdio", "streamable-http", "cyanheads", "worms", "marine-biology", "taxonomy", "aphia", "biodiversity"],
   "mcpServers": {
     "worms-marine-taxa-mcp-server": {
       "command": "npx",
