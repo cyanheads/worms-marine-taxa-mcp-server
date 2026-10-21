@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "worms-marine-taxa-mcp-server",
   "version": "0.1.1",
-  "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.",
+  "description": "Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"
   },

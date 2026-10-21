@@ -124,7 +124,7 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="worms-marine-taxa-mcp-server"
-LABEL org.opencontainers.image.description="Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP."
+LABEL org.opencontainers.image.description="Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/worms-marine-taxa-mcp-server"

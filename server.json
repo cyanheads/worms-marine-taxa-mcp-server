@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/worms-marine-taxa-mcp-server",
-  "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers.",
+  "description": "Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs.",
   "repository": {
     "url": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
     "source": "github"

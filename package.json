@@ -2,7 +2,7 @@
   "name": "@cyanheads/worms-marine-taxa-mcp-server",
   "version": "0.1.1",
   "mcpName": "io.github.cyanheads/worms-marine-taxa-mcp-server",
-  "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.",
+  "description": "Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server#readme",
   "bugs": {
@@ -71,7 +71,9 @@
     "streamable-http",
     "cyanheads",
     "worms",
+    "world-register-of-marine-species",
     "marine-biology",
+    "marine-species",
     "taxonomy",
     "aphia",
     "biodiversity"
