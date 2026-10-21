@@ -1,7 +1,8 @@
 <div align="center">
   <h1>@cyanheads/worms-marine-taxa-mcp-server</h1>
-  <p><b>Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.</b></p>
+  <p><b>Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP.</b>
   <div>8 Tools</div>
+  </p>
 </div>
 
 <div align="center">
@@ -22,88 +23,85 @@
 
 ## Overview
 
-Explore the [World Register of Marine Species (WoRMS)](https://www.marinespecies.org/): resolve scientific or common names to AphiaIDs, follow accepted names, and retrieve taxonomic and biological evidence. The public REST API needs no key.
+Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.marinespecies.org/). Resolve scientific or common names to AphiaIDs, follow accepted names, and pull classifications, synonyms, distributions, traits, and external identifiers from the keyless WoRMS REST API.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
-| `worms_resolve_taxon` | Resolve exact or fuzzy scientific names, or search a common name |
-| `worms_get_taxon` | Fetch full Aphia records and optional vernacular names |
-| `worms_get_classification` | Fetch root-to-tip classification and optional direct children |
-| `worms_get_synonyms` | Follow the accepted taxon and fetch a synonym page |
-| `worms_get_distributions` | Fetch recorded distributions with optional local filters |
-| `worms_get_traits` | Fetch attributes, references, and inheritance evidence |
-| `worms_crosswalk_id` | Map AphiaIDs to external identifiers, or reverse an external ID |
-| `worms_list_reference` | Inspect identifier codes, statuses, environment flags, ranks, and trait definitions |
+| `worms_resolve_taxon` | Resolve scientific names (exact or fuzzy) or one common name to AphiaIDs, with accepted-name links |
+| `worms_get_taxon` | Fetch full Aphia records by AphiaID, optionally with common names or sources |
+| `worms_get_classification` | Fetch the root-to-tip classification, optionally with direct children |
+| `worms_get_synonyms` | List synonyms of the accepted taxon behind an AphiaID |
+| `worms_get_distributions` | Fetch recorded distributions, filtered by status, establishment means, invasiveness, or occurrence |
+| `worms_get_traits` | Fetch attribute trees (body size, functional group, conservation listings) with sources and inheritance |
+| `worms_crosswalk_id` | Map an AphiaID to nine external identifier systems, or reverse an external ID |
+| `worms_list_reference` | List identifier systems, statuses, environment flags, distribution filter values, ranks, and trait definitions |
 
 ## Capability reference
 
-Names, external IDs, and text filters accept up to 512 characters. AphiaIDs are positive safe integers; paged tools use one-based offsets advancing by 50.
-
-Reads return whole items within a 24,000-byte paired-surface response target. Keep the original inputs and options when following zero-based continuation selectors; null means consumed. `budgetLimited` identifies an early byte cut. One indivisible oversized scientific item is retained intact with `oversizedItem: true` and `requiredBytes`, then continuation advances. Values are never clipped. Continuations refetch upstream data, so changes at the source can affect later segments.
-
 ### `worms_resolve_taxon` <sub>tool</sub>
 
-- Supply either `names` (up to 500 scientific names) or one `vernacular`; scientific reads use at most 50-name windows and return original `inputIndex` positions, preserving duplicates. Resume `nextInputOffset` and `nextMatchOffset` as `inputOffset` and `matchOffset` against the unchanged names; `deferredCount` counts unfinished input positions
-- Scientific names match exactly by default; `fuzzy: true` opts in. `marineOnly` and `extantOnly` default to `true`; inspect every match and its `validAphiaId` / `validName` rather than assuming an ambiguous name has one answer
-- Vernacular mode accepts upstream `offset` (one-based, default `1`) and local `resultOffset` (zero-based, default `0`); it cannot apply fuzzy matching or marine/extant filters. Consume `nextResultOffset` at the same upstream offset before advancing `page.nextOffset` and resetting `resultOffset` to zero
-- Full 50-row upstream pages have uncertain continuation: `page.nextOffset` can lead to an empty page. Local scientific-match continuation exposes all fetched matches; a 50-match scientific group still has unknown upstream completeness
+- `names` (1–500 scientific names, 50 per upstream request) or one `vernacular`, never both. `fuzzy: true` opts into TAXAMATCH matching; `marineOnly` and `extantOnly` default to `true` for names. Vernacular search matches a whole recorded common name, or with `vernacularMatch: "contains"` every recorded name containing the text (`grouper` finds no exact match but many by contains); it applies neither filter
+- Each result keeps its `inputIndex` (duplicates included), every match with `status`, `validAphiaId`, and `validName`, and a `guidance` line on a miss; continue with `nextInputOffset` and `nextMatchOffset`
+- Vernacular results page with the upstream `offset` (1-based, steps of 50) and the local `resultOffset`
 
 ---
 
 ### `worms_get_taxon` <sub>tool</sub>
 
-- Up to 500 `aphiaIds`; read at most 50 from `inputOffset` and resume `nextInputOffset` using the original array. `inputIndex` preserves duplicate and missing positions (`found: false`, `record: null`); `deferredCount` counts unfinished positions
-- `includeVernaculars: true` requires exactly one submitted ID; follow `nextVernacularOffset` as `vernacularOffset`, repeating the full unchanged primary record. An optional lookup failure appears as `vernacularError` while retaining the record
-- Records preserve citations, accepted-name links, and unknown fields; a null environment flag means unknown, not false
+- Up to 500 `aphiaIds`, 50 fetched per request; continue with `nextInputOffset`. Unknown IDs stay in position as `found: false`
+- `includeVernaculars: true` (one ID only) adds common names, paged with `vernacularOffset`; a failed lookup returns `vernacularError` beside the record
+- `includeSources: true` (one ID only, not with `includeVernaculars`) adds the taxon's sources, such as its `original description` and `basis of record`, with `reference`, `page`, `url`, `link`, `fulltext`, and `doi` verbatim. WoRMS returns the whole list at once, so the tool pages it with `sourceOffset`; a failed lookup returns `sourcesError` beside the record
 
 ---
 
 ### `worms_get_classification` <sub>tool</sub>
 
-- One `aphiaId` returns root-to-tip `ranks` segments; `found` distinguishes absent classification. `resultOffset` indexes the complete lineage followed by fetched children; follow `nextResultOffset` with unchanged options
-- `includeChildren: true` adds one page of direct children, with one-based `offset`, `marineOnly: true`, and `extantOnly: true` defaults; these options are inactive without children
-- Consume local segments at the same upstream offset before advancing `page.nextOffset` and resetting `resultOffset` to zero. A full fetched 50-row children page has uncertain continuation; `childrenError` retains the lineage when optional retrieval fails
+- One `aphiaId`; `ranks` is the root-to-tip lineage, with `found: false` when WoRMS has none
+- `includeChildren: true` adds one 50-row page of direct children (`offset`, `marineOnly`, `extantOnly`); a failed children lookup returns `childrenError` beside the lineage
+- An AphiaID that is not the accepted name keeps its own recorded lineage, and a `notice` names the accepted AphiaID to call instead; a failed status lookup returns `statusError` beside the lineage
 
 ---
 
 ### `worms_get_synonyms` <sub>tool</sub>
 
-- One `aphiaId` follows the accepted taxon's `validAphiaId` before retrieving synonyms; `found` and `guidance` distinguish a missing taxon from a name without a known accepted ID
-- One-based `offset` defaults to `1`; consume `nextResultOffset` as zero-based `resultOffset` at the same upstream offset before advancing `page.nextOffset` and resetting `resultOffset` to zero. A full fetched 50-row page has uncertain continuation
+- One `aphiaId`, accepted or not: synonyms are listed for its accepted taxon (`validAphiaId`), 50 per upstream `offset`
+- `found` and `guidance` separate a missing taxon from a name with no known accepted ID
 
 ---
 
 ### `worms_get_distributions` <sub>tool</sub>
 
-- One `aphiaId` returns recorded distributions in source order, retaining duplicates; follow `nextResultOffset` as `resultOffset` with unchanged filters
-- Optional `recordStatus` (`valid`, `doubtful`, `inaccurate`), `establishmentMeans`, `invasiveness`, and `occurrence` filters combine by conjunction; status uses exact equality, the others case-insensitive whole-value equality
-- Filtering scans the complete fetched set before pagination. `unfilteredCount` and `filteredCount` describe complete local evidence; `returnedCount` describes this segment. No rows does not establish biological or taxon absence
+- One `aphiaId`; optional `recordStatus` (`valid`, `doubtful`, `inaccurate`), `establishmentMeans`, `invasiveness`, and `occurrence` filters combine with AND. `recordStatus` is exact; the others are case-insensitive whole values, with observed values in `worms_list_reference` topic `distribution_terms`
+- Reports `unfilteredCount` and `filteredCount`; rows carry the locality, its MarineRegions `locationId`, and status fields in source order
+- WoRMS attaches records to individual name usages, so by default the tool reads that AphiaID's own records. `includeSynonyms: true` combines the accepted taxon's records with those of its synonyms, 10 synonyms per call, each row tagged `sourceAphiaId`; `synonymUnion` reports the window, the `nextSynonymOffset` to continue from, and any `failedSynonyms`
+- A `notice` flags an AphiaID that is not the accepted name and names the accepted one; without `includeSynonyms`, a failed status lookup returns `statusError` beside the rows
 
 ---
 
 ### `worms_get_traits` <sub>tool</sub>
 
-- One `aphiaId`; `includeInherited` defaults to `true`
-- Follow `nextResultOffset` as `resultOffset` with unchanged options. Attribute evidence retains values, references, inheritance markers, and complete-tree topology (`nodeIndex`, `parentIndex`, `depth`) in preorder; parents may be on earlier segments
-- Missing traits do not prove biological absence; IUCN list membership is not a Red List threat category
+- One `aphiaId`; `includeInherited` (default `true`) adds attributes recorded on higher taxa. On an accepted taxon WoRMS also returns attributes recorded on its synonyms whatever `includeInherited` is set to; `inheritedFrom` names the source taxon in both cases
+- A `notice` flags an AphiaID that is not the accepted name and names the accepted one; a failed status lookup returns `statusError` beside the attributes
+- Every node keeps `nodeIndex`, `parentIndex`, and `depth` from the full tree, so units and qualifiers stay attached to their values across pages; values and references are verbatim
+- `measurementType` (case-insensitive whole value, such as `Body size`) keeps each matching node with its subtree and ancestors, indices unchanged; `totalCount` counts that set and `unfilteredCount` the whole tree
 
 ---
 
 ### `worms_crosswalk_id` <sub>tool</sub>
 
-- Supply exactly one of `aphiaId` (forward) or `externalId` (reverse); reverse requires `type`, while forward can omit it to query all nine systems
-- Types: `algaebase`, `bold`, `dyntaxa`, `fishbase`, `iucn`, `lsid`, `ncbi`, `tsn`, `gisd`; IDs remain opaque strings, including leading zeros and LSIDs
-- Forward `resultOffset` indexes whole identifiers across types in request order; follow `nextResultOffset` with unchanged selectors. `ids` contains this segment; `typeTotals` distinguishes successful absence (zero) from IDs on other segments, and omits `failedTypes`. Reverse returns `found` and a full `record`; `resultOffset` is inactive. No external IDs does not prove taxon absence, and an IUCN ID is not a threat assessment
+- Exactly one of `aphiaId` (forward) or `externalId` with `type` (reverse). Forward reads one `type` or all nine: `algaebase`, `bold`, `dyntaxa`, `fishbase`, `iucn`, `lsid`, `ncbi`, `tsn`, `gisd`
+- Forward returns `ids` per type, `typeTotals` (0 means none recorded), and `failedTypes` for systems that errored; reverse returns `found` and the full record. IDs stay opaque strings, leading zeros included
 
 ---
 
 ### `worms_list_reference` <sub>tool</sub>
 
-- Required `topic`: `external_id_types`, `statuses`, `environment_flags`, `ranks`, or `trait_types`
-- The first three are available offline; statuses are a non-exhaustive guide. Ranks and trait definitions are retrieved live, with trait-key topology preserved
-- Follow `nextResultOffset` as `resultOffset` with the same topic; `totalCount` is the complete fetched entry count. Tree indices stay global across segments
+- `topic`: `external_id_types`, `statuses`, `environment_flags`, and `distribution_terms` are served offline; `ranks` and `trait_types` are read live
+- `statuses` covers the 28 statuses the WoRMS manual and REST API document, each with a one-line meaning and a `group` (`accepted`, `unaccepted`, `uncertain`, `technical`). A record's status can be the specific reason itself, such as `junior subjective synonym`, so test the group rather than `status === "unaccepted"`; the guide is non-exhaustive
+- `distribution_terms` lists the `establishmentMeans`, `invasiveness`, and `occurrence` values observed in WoRMS distributions, for the whole-value filters of `worms_get_distributions`; the lists are non-exhaustive
+- Pages with `resultOffset`; trait definitions keep their tree indices across pages
 
 ## Features
 
@@ -111,21 +109,20 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 WoRMS-specific:
 
-- Accepted-name relationships, sparse scientific facts, complete classifications, and trait hierarchy retained
-- Shared conservative pacing: one active upstream request and at least 500 ms between starts; bounded calls rather than register harvesting
-- A 45-second tool deadline and 8 MiB upstream response ceiling fail explicitly instead of clipping scientific data
+- Exact and TAXAMATCH fuzzy name matching with marine and extant filters; every match and record carries its accepted-name links
+- One shared request queue: one upstream request at a time, 500 ms between starts, a 45-second tool deadline, and an 8 MiB response ceiling
+- Per-call retrieval with no cache or bulk harvesting, as the [WoRMS webservice guidance](https://www.marinespecies.org/aphia.php?p=webservice) asks
+- Every response carries WoRMS attribution ([doi:10.14284/170](https://doi.org/10.14284/170)); credit the WoRMS Editorial Board and keep per-record citations when reusing results ([terms](https://www.marinespecies.org/about.php#terms))
 
 Agent-friendly output:
 
-- The same data in structured output and readable text, including effective options, continuation guidance, and attribution
-- Optional enrichment and multi-system crosswalk outages retain useful results with typed errors; required reads fail explicitly
-- Credit the [WoRMS Editorial Board](https://www.marinespecies.org/) ([doi:10.14284/170](https://doi.org/10.14284/170)) and preserve per-record citations when reusing results; see [WoRMS terms of use](https://www.marinespecies.org/about.php#terms)
+- Byte-bounded pages: reads return whole items within a 24,000-byte response and name the next offset (`nextResultOffset`, `nextInputOffset`, upstream `page.nextOffset`); a full 50-row upstream page reports `hasMore: null` rather than guessing
+- Unknown stays unknown: null and absent fields pass through, a null environment flag means not recorded, and empty evidence never claims biological absence
+- Partial failure: optional lookups (`vernacularError`, `sourcesError`, `childrenError`, `statusError`), synonym-union `failedSynonyms`, and crosswalk `failedTypes` keep the data that did arrive, with typed reasons and recovery hints
 
 ## Getting started
 
-### Self-Hosted / Local
-
-Add this to your MCP client configuration:
+Add the following to your MCP client configuration file.
 
 ```json
 {
@@ -133,7 +130,11 @@ Add this to your MCP client configuration:
     "worms-marine-taxa-mcp-server": {
       "type": "stdio",
       "command": "bunx",
-      "args": ["@cyanheads/worms-marine-taxa-mcp-server@latest"]
+      "args": ["@cyanheads/worms-marine-taxa-mcp-server@latest"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
@@ -147,7 +148,11 @@ Or with npx (no Bun required):
     "worms-marine-taxa-mcp-server": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/worms-marine-taxa-mcp-server@latest"]
+      "args": ["-y", "@cyanheads/worms-marine-taxa-mcp-server@latest"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
@@ -167,7 +172,7 @@ Or with Docker:
 }
 ```
 
-For Streamable HTTP, run from the installed repository:
+For Streamable HTTP, set the transport and start the server:
 
 ```sh
 MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
@@ -176,75 +181,91 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher, or Node.js v24+ to run the built package
-- No WoRMS account or API key required
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- No API key or account: the WoRMS REST API is public.
 
 ### Installation
 
+1. **Clone the repository:**
+
 ```sh
 git clone https://github.com/cyanheads/worms-marine-taxa-mcp-server.git
+```
+
+2. **Navigate into the directory:**
+
+```sh
 cd worms-marine-taxa-mcp-server
+```
+
+3. **Install dependencies:**
+
+```sh
 bun install
+```
+
+4. **Configure environment:**
+
+```sh
 cp .env.example .env
-bun run rebuild
 ```
 
 ## Configuration
 
-No server-specific environment variables are required.
+The server has no variables of its own; these are the common framework settings.
 
 | Variable | Description | Default |
 |:---|:---|:---|
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
-| `MCP_HTTP_HOST` | HTTP bind address. | `127.0.0.1` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
-| `MCP_HTTP_ENDPOINT_PATH` | MCP endpoint path. | `/mcp` |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
-| `MCP_LOG_LEVEL` | Log level. | `info` |
+| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<app-root>/logs` |
-| `STORAGE_PROVIDER_TYPE` | Framework storage backend. | `in-memory` |
-| `OTEL_ENABLED` | Enable OpenTelemetry. | `false` |
+| `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
+| `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
-See [`.env.example`](./.env.example) for common framework overrides.
+See [`.env.example`](./.env.example) for the common framework overrides.
 
 ## Running the server
 
 ### Local development
 
-```sh
-bun run rebuild
-bun run start:stdio
-# or
-bun run start:http
-```
+- **Build and run the production version**:
 
-Run checks and tests:
+  ```sh
+  # One-time build
+  bun run rebuild
 
-```sh
-bun run devcheck
-bun run test
-```
+  # Run the built server
+  bun run start:http
+  # or
+  bun run start:stdio
+  ```
+
+- **Run checks and tests**:
+  ```sh
+  bun run devcheck  # Lints, formats, type-checks, and more
+  bun run test      # Runs the test suite
+  ```
 
 ## Project structure
 
 | Directory | Purpose |
 |:---|:---|
-| `src/mcp-server/tools/definitions/` | Eight read-only tool definitions. |
-| `src/services/worms/` | WoRMS transport, normalization, schemas, and lossless formatting. |
+| `src/mcp-server/tools/definitions` | Tool definitions (`*.tool.ts`). Eight read-only tools. |
+| `src/services/worms` | WoRMS service: paced transport, normalization, domain schemas, response budgeting, and formatting. |
+| `docs/` | Design contract (`design.md`) and the generated directory tree. |
 | `tests/` | Service, tool-contract, and JSON-RPC integration tests. |
-| `scripts/` | Build, validation, documentation, and packaging commands. |
-
-See [`docs/tree.md`](./docs/tree.md) for the full tree.
 
 ## Development guide
 
 See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rules. The short version:
 
-- Handlers throw, framework catches; optional enrichment reports classified failures without discarding primary evidence
-- Register tools in the `createApp()` arrays in `src/index.ts`
-- Use relative ESM `.js` paths for internal source imports; package imports use their package names
-- Validate upstream responses and preserve missing facts, source order, and attribution
+- Handlers throw, framework catches; optional lookups report classified failures beside the primary data instead of discarding it
+- Register new tools in the `createApp()` arrays in `src/index.ts`
+- Internal imports are relative ESM paths with `.js` extensions
+- Wrap external API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing
 

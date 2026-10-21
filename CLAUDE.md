@@ -29,8 +29,9 @@
 Eight read-only tools call one `WormsService`; no resources, prompts, or custom environment configuration are registered. Read the representative definition in `src/mcp-server/tools/definitions/get-classification.tool.ts` and the service barrel in `src/services/worms/index.ts`.
 
 - Create one `using scope = new WormsScope(ctx)` per tool call. Pass it through every service call; its deadline covers queue wait, retries, normalization, and formatting preparation.
-- Return complete scientific data through `formatData`; enrichment uses `renderData` trailers so both consumption paths carry the same values.
-- Optional children and vernacular lookups use `scope.optionalError`; cancellation, whole-tool deadline expiry, and upstream input rejection remain atomic failures.
+- Return complete scientific data through `formatData`; declare `enrichmentTrailer: codecTrailer(...)` so enrichment fields render through the same codec and both consumption paths carry the same values.
+- Optional children, vernacular, source, and status lookups and per-synonym distribution reads use `scope.optionalError`; cancellation, whole-tool deadline expiry, and upstream input rejection remain atomic failures.
+- Every tool declares all seven upstream reasons from the transport `failures` table in its own `errors[]`, with a recovery that names a step for that tool's caller. Transport failures carry no hint: the framework fills the entry onto thrown failures and `optionalError` copies it into item errors.
 - Never infer biological absence from missing traits or distributions, or turn unknown flags into false. Follow accepted-name links without silently selecting an ambiguous match.
 - `createApp()` uses bare `worms-marine-taxa-mcp-server` for both `name` and `title`, initializes the service in `setup()`, and disposes its shared pacer in `teardown()`. The default session mode is `stateless`.
 
@@ -103,7 +104,8 @@ src/
     worms-service.ts                    # Retrieval and normalization
     schemas.ts                          # Sparse domain schemas and pagination
     transport.ts                        # Shared pacer, deadlines, retries
-    format.ts                           # Lossless readable output
+    budget.ts                           # 24 KB page budget and local offsets
+    format.ts                           # Lossless nested-list rendering
   mcp-server/tools/definitions/         # Eight *.tool.ts definitions
 tests/                                  # Services, contracts, transport integration
 ```
