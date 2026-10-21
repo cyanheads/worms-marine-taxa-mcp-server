@@ -5,8 +5,14 @@
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { failure, failures, request, WormsScope } from '@/services/worms/index.js';
-import { fakeFetch, settle, setupWorms } from '../helpers/worms.js';
+import {
+  type FailureReason,
+  failure,
+  failures,
+  request,
+  WormsScope,
+} from '@/services/worms/index.js';
+import { fakeFetch, hang, NetworkFailure, offline, settle, setupWorms } from '../helpers/worms.js';
 
 beforeEach(setupWorms);
 afterEach(() => {
@@ -18,34 +24,35 @@ const query = new URLSearchParams();
 
 describe('classified bounded requests', () => {
   it.each([
-    [400, 'upstream_rejected'],
-    [422, 'upstream_rejected'],
-    [401, 'upstream_access_denied'],
-    [403, 'upstream_access_denied'],
-    [404, 'invalid_upstream_response'],
-    [429, 'upstream_rate_limited'],
-    [408, 'upstream_timeout'],
-    [504, 'upstream_timeout'],
-    [500, 'upstream_unavailable'],
-  ] as const)('classifies HTTP %i without leaking body or headers', async (status, reason) => {
-    const network = fakeFetch(
-      () =>
-        new Response('SECRET BODY', {
-          status,
-          headers: { 'x-secret': 'SECRET HEADER', 'retry-after': '1' },
-        }),
-    );
-    using scope = new WormsScope(createMockContext());
-    const error = await settle(
-      request(scope, endpoint, query, (data) => data).catch((error: unknown) => error),
-    );
-    expect(error).toMatchObject({
-      code: failures[reason][0],
-      data: { reason, retryable: failures[reason][2], recovery: { hint: failures[reason][1] } },
-    });
-    expect(JSON.stringify(error)).not.toContain('SECRET');
-    expect(network.calls).toHaveLength([429, 408, 504, 500].includes(status) ? 2 : 1);
-  });
+    [400, 'upstream_rejected', JsonRpcErrorCode.ValidationError, false],
+    [422, 'upstream_rejected', JsonRpcErrorCode.ValidationError, false],
+    [401, 'upstream_access_denied', JsonRpcErrorCode.ServiceUnavailable, false],
+    [403, 'upstream_access_denied', JsonRpcErrorCode.ServiceUnavailable, false],
+    [404, 'invalid_upstream_response', JsonRpcErrorCode.SerializationError, false],
+    [429, 'upstream_rate_limited', JsonRpcErrorCode.RateLimited, true],
+    [408, 'upstream_timeout', JsonRpcErrorCode.Timeout, true],
+    [504, 'upstream_timeout', JsonRpcErrorCode.Timeout, true],
+    [500, 'upstream_unavailable', JsonRpcErrorCode.ServiceUnavailable, true],
+  ] as const)(
+    'classifies HTTP %i as %s, leaving the hint to the calling tool and leaking no body or headers',
+    async (status, reason, code, retryable) => {
+      const network = fakeFetch(
+        () =>
+          new Response('SECRET BODY', {
+            status,
+            headers: { 'x-secret': 'SECRET HEADER', 'retry-after': '1' },
+          }),
+      );
+      using scope = new WormsScope(createMockContext());
+      const error = await settle(
+        request(scope, endpoint, query, (data) => data).catch((error: unknown) => error),
+      );
+      expect(error).toMatchObject({ code, data: { reason, retryable } });
+      expect(error).not.toHaveProperty('data.recovery');
+      expect(JSON.stringify(error)).not.toContain('SECRET');
+      expect(network.calls).toHaveLength([429, 408, 504, 500].includes(status) ? 2 : 1);
+    },
+  );
   it.each([
     ['{broken', 'invalid_upstream_response', 1],
     ['<html>temporary outage</html>', 'upstream_unavailable', 2],
@@ -59,7 +66,7 @@ describe('classified bounded requests', () => {
   });
   it('retries the complete pipeline after a network failure', async () => {
     const network = fakeFetch((_url, _init, index) => {
-      if (!index) throw new TypeError('private network details');
+      if (!index) throw new NetworkFailure('private network details');
       return Response.json({ ok: true });
     });
     using scope = new WormsScope(createMockContext());
@@ -114,17 +121,32 @@ describe('classified bounded requests', () => {
     expect((value as string).length).toBe(8 * 1024 * 1024 - 2);
   });
   it('rejects unallowlisted paths and query keys before fetch', async () => {
-    const network = fakeFetch(() => {
-      throw new Error('Unexpected fetch');
-    });
+    offline();
     using scope = new WormsScope(createMockContext());
-    await expect(request(scope, 'https://evil.test', query, (data) => data)).rejects.toThrow(
-      'Unsupported WoRMS endpoint',
-    );
+    for (const path of [
+      'https://evil.test',
+      'AphiaSourcesByAphiaID/',
+      'AphiaSourcesByAphiaID/1a',
+      'AphiaSourcesByAphiaID/1/2',
+      'AphiaSourceByAphiaID/1',
+      'AphiaSourcesByAphiaID/%2e%2e',
+    ])
+      await expect(request(scope, path, query, (data) => data)).rejects.toThrow(
+        'Unsupported WoRMS endpoint',
+      );
     await expect(
       request(scope, endpoint, new URLSearchParams({ extra: 'x' }), (data) => data),
     ).rejects.toThrow('Unsupported WoRMS query key');
-    expect(network.calls).toHaveLength(0);
+  });
+  it('allowlists the taxon source path with no query keys', async () => {
+    const network = fakeFetch(() => Response.json([{ source_id: 8 }]));
+    using scope = new WormsScope(createMockContext());
+    await expect(
+      settle(request(scope, 'AphiaSourcesByAphiaID/126436', query, (data) => data)),
+    ).resolves.toEqual([{ source_id: 8 }]);
+    expect(network.calls.map((url) => [url.pathname, url.search])).toEqual([
+      ['/rest/AphiaSourcesByAphiaID/126436', ''],
+    ]);
   });
 });
 
@@ -169,14 +191,7 @@ describe('pacing and absolute lifetime', () => {
   });
   it('cancels an active fetch with no retry', async () => {
     const abort = new AbortController();
-    const network = fakeFetch(
-      (_url, init) =>
-        new Promise((_resolve, reject) =>
-          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
-            once: true,
-          }),
-        ),
-    );
+    const network = fakeFetch((_url, init) => hang(init));
     using scope = new WormsScope(createMockContext({ signal: abort.signal }));
     const pending = request(scope, endpoint, query, (data) => data).catch(
       (error: unknown) => error,
@@ -188,9 +203,45 @@ describe('pacing and absolute lifetime', () => {
     });
     expect(network.calls).toHaveLength(1);
   });
+  const contract = (...reasons: FailureReason[]) =>
+    reasons.map((reason) => ({
+      reason,
+      code: failures[reason][0],
+      when: 'Forced in a transport test.',
+      recovery: `Recover from ${reason} as this calling tool declares.`,
+    }));
+  it('takes each item recovery from the calling tool contract and rethrows undeclared reasons', () => {
+    using scope = new WormsScope(
+      createMockContext({ errors: contract('upstream_timeout', 'upstream_unavailable') }),
+    );
+    expect(scope.optionalError(failure('upstream_timeout'))).toEqual({
+      reason: 'upstream_timeout',
+      code: JsonRpcErrorCode.Timeout,
+      message: 'upstream timeout',
+      recovery: 'Recover from upstream_timeout as this calling tool declares.',
+      retryable: true,
+    });
+    expect(
+      scope.optionalError(failure('upstream_unavailable', 'WoRMS returned HTTP 503.')),
+    ).toEqual({
+      reason: 'upstream_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      message: 'WoRMS returned HTTP 503.',
+      recovery: 'Recover from upstream_unavailable as this calling tool declares.',
+      retryable: true,
+    });
+    expect(() => scope.optionalError(failure('upstream_access_denied'))).toThrow(
+      'upstream access denied',
+    );
+  });
   it('retains optional failures only while the whole tool remains viable', () => {
     const abort = new AbortController();
-    using scope = new WormsScope(createMockContext({ signal: abort.signal }));
+    using scope = new WormsScope(
+      createMockContext({
+        signal: abort.signal,
+        errors: contract('upstream_timeout', 'upstream_rejected', 'upstream_unavailable'),
+      }),
+    );
     expect(scope.optionalError(failure('upstream_timeout'))).toMatchObject({
       reason: 'upstream_timeout',
       retryable: true,
@@ -204,14 +255,7 @@ describe('pacing and absolute lifetime', () => {
   });
   it('bounds the pending queue and releases cancelled requests', async () => {
     const abort = new AbortController();
-    const network = fakeFetch(
-      (_url, init) =>
-        new Promise((_resolve, reject) =>
-          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
-            once: true,
-          }),
-        ),
-    );
+    const network = fakeFetch((_url, init) => hang(init));
     using scope = new WormsScope(createMockContext({ signal: abort.signal }));
     const pending = Array.from({ length: 103 }, () =>
       request(scope, endpoint, query, (data) => data).catch((error: unknown) => error),
@@ -255,14 +299,7 @@ describe('pacing and absolute lifetime', () => {
     expect(network.calls).toHaveLength(1);
   });
   it('retries one timed-out attempt and classifies exhausted attempt timeouts', async () => {
-    const network = fakeFetch(
-      (_url, init) =>
-        new Promise((_resolve, reject) =>
-          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
-            once: true,
-          }),
-        ),
-    );
+    const network = fakeFetch((_url, init) => hang(init));
     using scope = new WormsScope(createMockContext());
     await expect(settle(request(scope, endpoint, query, (data) => data))).rejects.toMatchObject({
       data: { reason: 'upstream_timeout' },

@@ -6,6 +6,8 @@ globalThis.fetch = async (input) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin !== 'https://www.marinespecies.org')
     throw new Error(`Unexpected origin: ${url.origin}`);
+  if (url.pathname === '/rest/AphiaRecordByAphiaID/1' && !url.search)
+    return Response.json({ AphiaID: 1, status: 'accepted', valid_AphiaID: 1 });
   if (
     url.pathname === '/rest/AphiaAttributesByAphiaID/1' &&
     url.searchParams.get('include_inherited') === 'true'

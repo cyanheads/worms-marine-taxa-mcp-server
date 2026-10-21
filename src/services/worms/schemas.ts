@@ -23,13 +23,14 @@ export const textSchema = z
   .min(1)
   .max(512)
   .describe('Nonempty name, at most 512 characters.');
-export const optionalTextSchema = z.preprocess(
-  (value) => (typeof value === 'string' && !value.trim() ? undefined : value),
-  textSchema.optional(),
-);
+/** Treat a blank or whitespace-only optional string as omitted. */
+export function blankAsUnset(value: unknown) {
+  return typeof value === 'string' && !value.trim() ? undefined : value;
+}
+export const optionalTextSchema = z.preprocess(blankAsUnset, textSchema.optional());
 /** Opaque optional input; omit blanks without rewriting populated strings. */
 export const optionalEvidenceTextSchema = z.preprocess(
-  (value) => (typeof value === 'string' && !value.trim() ? undefined : value),
+  blankAsUnset,
   z.string().min(1).max(512).optional(),
 );
 const sparseText = z.string().nullable().optional();
@@ -59,6 +60,9 @@ const evidenceId = z
   .optional();
 export const distributionSchema = z
   .object({
+    sourceAphiaId: aphiaIdSchema
+      .optional()
+      .describe('AphiaID the record is attached to; present only with includeSynonyms.'),
     locality: sparseText.describe('Recorded locality.'),
     locationId: sparseText.describe('Locality identifier.'),
     higherGeography: sparseText.describe('Broader recorded geography.'),
@@ -87,7 +91,9 @@ export const traitSchema = z
     qualityStatus: sparseText.describe('Recorded quality status.'),
     categoryId: evidenceId.describe('Category identifier.'),
     inheritedAphiaId: evidenceId.describe('Original inheritance marker.'),
-    inheritedFrom: evidenceId.describe('Known different source taxon, otherwise null.'),
+    inheritedFrom: evidenceId.describe(
+      'Known different source taxon (a higher taxon or a synonym), otherwise null.',
+    ),
     parentType: sparseText.describe('Immediate parent measurement type; null at roots.'),
   })
   .describe('Trait evidence node with complete topology; omitted or null facts are unknown.');
@@ -154,6 +160,15 @@ export const childSchema = taxonRecordSchema
     status: true,
   })
   .describe('Direct child taxon.');
+export const synonymSchema = taxonRecordSchema
+  .pick({
+    aphiaId: true,
+    scientificname: true,
+    authority: true,
+    status: true,
+    unacceptreason: true,
+  })
+  .describe('Synonym name usage.');
 export const vernacularSchema = z
   .object({
     vernacular: sparseText.describe('Common name.'),
@@ -161,6 +176,20 @@ export const vernacularSchema = z
     language: sparseText.describe('Language name.'),
   })
   .describe('Recorded common name.');
+export const sourceSchema = z
+  .object({
+    sourceId: sparseId.describe('AphiaSource identifier.'),
+    use: sparseText.describe(
+      'How the source supports the name, such as original description or basis of record; open vocabulary.',
+    ),
+    reference: sparseText.describe('Unmodified bibliographic reference.'),
+    page: sparseText.describe('Cited page.'),
+    url: sparseText.describe('WoRMS source detail URL.'),
+    link: sparseText.describe('External link to the source.'),
+    fulltext: sparseText.describe('Full-text URL.'),
+    doi: sparseText.describe('Source DOI.'),
+  })
+  .describe('Taxon source record; omitted or null fields are unknown.');
 export const itemErrorSchema = z.object({
   reason: z.string().describe('Classified reason.'),
   code: z.number().describe('JSON-RPC code.'),
@@ -168,6 +197,31 @@ export const itemErrorSchema = z.object({
   recovery: z.string().describe('Recovery guidance.'),
   retryable: z.boolean().describe('Whether retry can succeed.'),
 });
+export const statusErrorSchema = itemErrorSchema
+  .optional()
+  .describe(
+    'Failed taxonomic-status read; evidence is unaffected, but whether the AphiaID is its accepted name is unknown.',
+  );
+/**
+ * Notice fragment for a submitted AphiaID that is not its own accepted name: both numeric IDs and
+ * the caller's retry, or a worms_get_taxon check when no accepted taxon is linked. Accepted,
+ * self-valid, and missing records yield none; upstream names and statuses never enter the text.
+ */
+export function statusNotice(
+  id: number,
+  record: TaxonRecord | null,
+  retry: (validAphiaId: number) => string,
+) {
+  if (!record) return;
+  const valid = record.validAphiaId;
+  if (valid !== null && valid !== undefined)
+    return valid === id
+      ? undefined
+      : `AphiaID ${id} is not the accepted name; WoRMS links it to accepted AphiaID ${valid}. ${retry(valid)}`;
+  return record.status === 'accepted'
+    ? undefined
+    : `WoRMS links no accepted taxon to AphiaID ${id}; call worms_get_taxon with aphiaIds: [${id}] to inspect its status.`;
+}
 export const attributionSchema = z
   .object({
     citation: z.string().describe('WoRMS attribution.'),
@@ -200,4 +254,12 @@ export function page(offset: number, count: number) {
     hasMore: count < 50 ? (false as const) : null,
     nextOffset: count < 50 ? null : offset + 50,
   };
+}
+/** A fetched page seen through one local segment; nextOffset stays current until it is consumed. */
+export function segmentPage(
+  fetched: ReturnType<typeof page>,
+  returnedCount: number,
+  consumed: boolean,
+) {
+  return { ...fetched, returnedCount, nextOffset: consumed ? fetched.nextOffset : fetched.offset };
 }

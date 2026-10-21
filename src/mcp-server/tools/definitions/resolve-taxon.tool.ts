@@ -7,8 +7,10 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   attribution,
   attributionSchema,
+  blankAsUnset,
   budgetFields,
   budgetPrefix,
+  codecTrailer,
   formatData,
   getWormsService,
   localOffsetSchema,
@@ -19,14 +21,14 @@ import {
   optionalTextSchema,
   page,
   pageSchema,
-  renderData,
+  segmentPage,
   textSchema,
   WormsScope,
 } from '../../../services/worms/index.js';
 
 export const resolveTaxonTool = tool('worms_resolve_taxon', {
   description:
-    'Resolve exact or explicitly fuzzy scientific names, or search one vernacular name. Names default to marine and extant taxa; vernacular cannot filter. Resume scientific segments with nextInputOffset and nextMatchOffset against unchanged names and options; inputIndex preserves duplicates and partialGroup identifies split groups. For vernacular, consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Full 50-match upstream groups remain completeness-unknown; accepted-name fields do not choose an ambiguous match.',
+    'Resolve exact or explicitly fuzzy scientific names, or search one vernacular name as a whole recorded common name or, with vernacularMatch: "contains", as part of one. Names default to marine and extant taxa; vernacular cannot filter. Resume scientific segments with nextInputOffset and nextMatchOffset against unchanged names and options; inputIndex preserves duplicates and partialGroup identifies split groups. For vernacular, consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Full 50-match upstream groups remain completeness-unknown; accepted-name fields do not choose an ambiguous match.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     inputOffset: localOffsetSchema.describe(
@@ -49,6 +51,11 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     vernacular: optionalTextSchema.describe(
       'Common name, mutually exclusive with names; blank means unset.',
     ),
+    vernacularMatch: z
+      .preprocess(blankAsUnset, z.enum(['exact', 'contains']).default('exact'))
+      .describe(
+        'Vernacular only: exact matches a whole recorded common name; contains matches every recorded common name containing the text, such as grouper in Nassau grouper. Names accept only exact; blank means exact.',
+      ),
     fuzzy: z
       .boolean()
       .default(false)
@@ -65,7 +72,9 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       .describe(
         'Filter scientific names to extant taxa; vernacular cannot filter and rejects false.',
       ),
-    offset: offsetSchema,
+    offset: offsetSchema.describe(
+      'Vernacular only: one-based upstream starting record, advancing by 50; default 1. Scientific names accept only 1.',
+    ),
   }),
   output: z.object({
     ...budgetFields,
@@ -108,7 +117,12 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     attribution: attributionSchema,
   }),
   enrichment: {
-    notice: z.string().optional().describe('Deferred-work or empty-page guidance.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Empty vernacular-page guidance, or the inputIndex of each returned 50-match scientific-name group, whose completeness is unknown, with the change that narrows it.',
+      ),
     echo: z
       .object({
         marineOnly: z
@@ -121,23 +135,23 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
           .describe('Effective extant filter, null when unsupported.'),
         fuzzy: z.boolean().describe('Effective fuzzy mode.'),
         offset: z.number().optional().describe('Vernacular offset.'),
+        vernacularMatch: z
+          .enum(['exact', 'contains'])
+          .optional()
+          .describe('Effective vernacular match mode.'),
         matchAuthority: z.boolean().optional().describe('Fuzzy authority matching, always false.'),
       })
       .describe('Effective matching options.'),
   },
-  enrichmentTrailer: {
-    notice: { render: (value) => renderData(value, '$["notice"]') },
-    echo: { render: (value) => renderData(value, '$["echo"]') },
-  },
+  enrichmentTrailer: codecTrailer('notice', 'echo'),
   errors: [
     {
       reason: 'upstream_rejected',
       code: JsonRpcErrorCode.ValidationError,
       when: 'HTTP 400/422 rejected the inputs.',
-      recovery:
-        'Call worms_list_reference for valid vocabulary, then retry the original tool with corrected inputs.',
+      recovery: 'Correct the submitted names or vernacular, then retry the same tool.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_rate_limited',
@@ -146,7 +160,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       recovery:
         'Wait for the stated retry delay, then retry the same tool with fewer concurrent calls.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_access_denied',
@@ -154,42 +168,40 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       when: 'Keyless upstream denies access.',
       recovery: 'Retry the same tool later; the keyless WoRMS service currently refuses access.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'Network, server, or HTML failure.',
-      recovery:
-        'Retry the same tool later; use worms_list_reference with topic: external_id_types for offline vocabulary.',
+      recovery: 'Retry the same tool later; the WoRMS service is currently unreachable or failing.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_timeout',
       code: JsonRpcErrorCode.Timeout,
       when: 'Request or whole-tool deadline expired.',
-      recovery:
-        'Retry the same tool later; call worms_crosswalk_id with one type to reduce crosswalk work.',
+      recovery: 'Retry the same tool later; WoRMS did not answer within the time limit.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_upstream_response',
       code: JsonRpcErrorCode.SerializationError,
       when: 'Malformed or incompatible upstream response.',
-      recovery: 'Retry the same tool later; use worms_get_taxon to verify a known AphiaID.',
+      recovery: 'Retry the same tool later; WoRMS returned a response this server cannot read.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'response_too_large',
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'Upstream response exceeds 8 MiB.',
       recovery:
-        'Call worms_get_taxon for the taxon record; this tool cannot return the oversized WoRMS response.',
+        'If several names were submitted, submit fewer per call; for one name or a vernacular, submit a more specific one, or use exact matching if fuzzy: true or vernacularMatch: "contains" was set. This tool cannot return the oversized WoRMS response.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_selector',
@@ -203,7 +215,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Options cannot apply to the selected matching mode.',
       recovery:
-        'Call worms_resolve_taxon with fuzzy and filters for names, or only vernacular and offset for common names.',
+        'Call worms_resolve_taxon with fuzzy and filters for names, or only vernacular, vernacularMatch, and offset for common names.',
     },
   ],
   async handler(input, ctx) {
@@ -211,7 +223,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     if (input.vernacular === '.' || input.vernacular === '..')
       throw ctx.fail('invalid_selector', 'vernacular cannot be . or ..');
     if (
-      (input.names && input.offset !== 1) ||
+      (input.names && (input.offset !== 1 || input.vernacularMatch !== 'exact')) ||
       (input.vernacular && (input.fuzzy || !input.marineOnly || !input.extantOnly))
     )
       throw ctx.fail('unsupported_mode_options');
@@ -219,12 +231,25 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     const service = getWormsService();
     if (input.vernacular) {
       const vernacular = input.vernacular;
-      const matches = await service.vernacularSearch(input.vernacular, input.offset, scope);
+      const contains = input.vernacularMatch === 'contains';
+      const matches = await service.vernacularSearch(vernacular, contains, input.offset, scope);
+      const broader =
+        input.offset > 1 ? 'a broader vernacular or offset: 1' : 'a broader vernacular';
       const enrichment = {
-        echo: { marineOnly: null, extantOnly: null, fuzzy: false, offset: input.offset },
         ...(matches.length === 0
-          ? { notice: 'Call worms_resolve_taxon with a broader vernacular or offset: 1.' }
+          ? {
+              notice: contains
+                ? `Call worms_resolve_taxon with ${broader}.`
+                : `Call worms_resolve_taxon with vernacularMatch: "contains" to match part of a recorded common name, or with ${broader}.`,
+            }
           : {}),
+        echo: {
+          marineOnly: null,
+          extantOnly: null,
+          fuzzy: false,
+          offset: input.offset,
+          vernacularMatch: input.vernacularMatch,
+        },
       };
       ctx.enrich(enrichment);
       scope.check();
@@ -247,14 +272,11 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
           nextInputOffset: null,
           nextMatchOffset: null,
           deferredCount: 0,
-          page: {
-            ...page(input.offset, matches.length),
-            returnedCount: segment.length,
-            nextOffset:
-              pagination.nextResultOffset === null
-                ? page(input.offset, matches.length).nextOffset
-                : input.offset,
-          },
+          page: segmentPage(
+            page(input.offset, matches.length),
+            segment.length,
+            pagination.nextResultOffset === null,
+          ),
           attribution: attribution(),
         }),
         enrichment,
@@ -262,8 +284,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       );
     }
     const names = input.names ?? [];
-    const windowStart = Math.floor(input.inputOffset / 50) * 50;
-    const processed = names.slice(windowStart, windowStart + 50);
+    const processed = names.slice(input.inputOffset, input.inputOffset + 50);
     const groups = processed.length
       ? await service.names(processed, input.fuzzy, input.marineOnly, input.extantOnly, scope)
       : [];
@@ -278,40 +299,38 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
             ...(input.marineOnly
               ? ['Call worms_resolve_taxon with marineOnly: false to include non-marine taxa.']
               : []),
+            ...(input.extantOnly
+              ? ['Call worms_resolve_taxon with extantOnly: false to include extinct taxa.']
+              : []),
           ].join(' ');
-      return { input: name, inputIndex: windowStart + index, matches, guidance };
+      return { input: name, inputIndex: input.inputOffset + index, matches, guidance };
     });
-    const notices = [
-      ...(groups.some((group) => group.length === 50)
-        ? [
-            'A scientific-name group returned 50 matches; completeness is unknown. Narrow the scientific name with worms_resolve_taxon.',
-          ]
-        : []),
-    ];
-    const enrichment = {
-      echo: {
-        marineOnly: input.marineOnly,
-        extantOnly: input.extantOnly,
-        fuzzy: input.fuzzy,
-        ...(input.fuzzy ? { matchAuthority: false } : {}),
-      },
-      ...(notices.length ? { notice: notices.join(' ') } : {}),
+    const echo = {
+      marineOnly: input.marineOnly,
+      extantOnly: input.extantOnly,
+      fuzzy: input.fuzzy,
+      ...(input.fuzzy ? { matchAuthority: false } : {}),
     };
-    ctx.enrich(enrichment);
+    /** The notice names only the full 50-match groups the page returns. */
+    const enrichmentFor = (page: { results: { inputIndex: number }[] }) => {
+      const full = page.results
+        .map((row) => row.inputIndex)
+        .filter((inputIndex) => groups[inputIndex - input.inputOffset]?.length === 50);
+      return { echo, ...(full.length ? { notice: fiftyMatchNotice(full, input.fuzzy) } : {}) };
+    };
     scope.check();
     const units = results.flatMap<{
       group: (typeof results)[number];
       match: z.infer<typeof matchSchema> | null;
       matchIndex: number;
     }>((group) => {
-      if (group.inputIndex < input.inputOffset) return [];
       const start = group.inputIndex === input.inputOffset ? input.matchOffset : 0;
       if (!group.matches.length) return [{ group, match: null, matchIndex: 0 }];
       return group.matches
         .slice(start)
         .map((match, index) => ({ group, match, matchIndex: start + index }));
     });
-    return budgetPrefix(
+    const selectedPage = budgetPrefix(
       units.length,
       (take, budget) => {
         const selected = units.slice(0, take);
@@ -352,9 +371,25 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
           ...budget,
         };
       },
-      enrichment,
+      enrichmentFor,
       () => scope.check(),
     );
+    ctx.enrich(enrichmentFor(selectedPage));
+    return selectedPage;
   },
   format: formatData,
 });
+
+/**
+ * Completeness notice naming each returned 50-match group by its numeric inputIndex only, with the
+ * change that narrows it: a fuller name, or exact matching after a fuzzy call.
+ */
+function fiftyMatchNotice(indices: number[], fuzzy: boolean) {
+  const one = indices.length === 1;
+  const groups = one
+    ? `The scientific-name group at inputIndex ${indices[0]} returned 50 matches;`
+    : `The scientific-name groups at inputIndex ${indices.join(', ')} returned 50 matches each;`;
+  const names = one ? 'a fuller name for that group' : 'fuller names for those groups';
+  const change = fuzzy ? `fuzzy: false, or with ${names}` : names;
+  return `${groups} completeness is unknown. Call worms_resolve_taxon with ${change}, such as genus plus species epithet.`;
+}

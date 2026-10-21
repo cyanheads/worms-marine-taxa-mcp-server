@@ -8,6 +8,9 @@ import {
   distributionSchema,
   matchSchema,
   rankNodeSchema,
+  sourceSchema,
+  synonymSchema,
+  type TaxonRecord,
   taxonRecordSchema,
   traitSchema,
   vernacularSchema,
@@ -15,13 +18,13 @@ import {
 import { disposeTransport, failure, request, type WormsScope } from './transport.js';
 
 /** Validate a shallow upstream object without traversing nested trees recursively. */
-export function object(value: unknown): Record<string, unknown> {
+function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw failure('invalid_upstream_response');
   return value as Record<string, unknown>;
 }
 /** Validate list endpoints without coercing malformed data into absence. */
-export function array(value: unknown): unknown[] {
+function array(value: unknown): unknown[] {
   if (!Array.isArray(value)) throw failure('invalid_upstream_response');
   return value;
 }
@@ -32,8 +35,17 @@ function scan<T>(data: unknown, scope: WormsScope, normalize: (row: unknown) => 
     return normalize(row);
   });
 }
+/** Fetch a flat list endpoint; 204 is an empty list. */
+async function list<T>(
+  scope: WormsScope,
+  endpoint: string,
+  query: URLSearchParams,
+  normalize: (row: unknown) => T,
+): Promise<T[]> {
+  return (await request(scope, endpoint, query, (data) => scan(data, scope, normalize))) ?? [];
+}
 /** Preserve omissions and nulls while applying documented field names. */
-export function mapped(raw: Record<string, unknown>, fields: Record<string, string>) {
+function mapped(raw: Record<string, unknown>, fields: Record<string, string>) {
   return Object.fromEntries(
     Object.entries(fields)
       .filter(([, source]) => Object.hasOwn(raw, source))
@@ -41,13 +53,13 @@ export function mapped(raw: Record<string, unknown>, fields: Record<string, stri
   );
 }
 /** Turn shape failures into nonretryable upstream failures. */
-export function checked<T>(schema: z.ZodType<T>, value: unknown): T {
+function checked<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
   if (!parsed.success)
     throw failure('invalid_upstream_response', 'WoRMS returned an incompatible response shape.');
   return parsed.data;
 }
-const fields = {
+const recordFields = {
   aphiaId: 'AphiaID',
   url: 'url',
   scientificname: 'scientificname',
@@ -78,8 +90,8 @@ const fields = {
   matchType: 'match_type',
 };
 /** Normalize a full documented AphiaRecord, preserving unknown scientific facts. */
-export function normalizeRecord(value: unknown) {
-  const result = mapped(object(value), fields);
+function normalizeRecord(value: unknown) {
+  const result = mapped(object(value), recordFields);
   for (const key of ['isMarine', 'isBrackish', 'isFreshwater', 'isTerrestrial', 'isExtinct']) {
     if (result[key] === 0) result[key] = false;
     if (result[key] === 1) result[key] = true;
@@ -87,12 +99,11 @@ export function normalizeRecord(value: unknown) {
   return checked(taxonRecordSchema, result);
 }
 /** Literal-null and all-null batch slots are missing records. */
-export function missingRecord(value: unknown): boolean {
+function missingRecord(value: unknown): boolean {
   return (
     value === null ||
     (typeof value === 'object' &&
       !Array.isArray(value) &&
-      value !== null &&
       Object.keys(value).length > 0 &&
       Object.values(value).every((entry) => entry === null))
   );
@@ -103,27 +114,15 @@ const rankReferenceSchema = z.object({
   kingdomAphiaId: z.number().int().nullable().optional(),
   kingdom: z.string().nullable().optional(),
 });
+const numericKeyId = z
+  .union([z.number().int(), z.string().regex(/^\d+$/)])
+  .nullable()
+  .optional();
 const attributeKeySchema = z.object({
-  measurementTypeId: z
-    .union([z.number().int(), z.string().regex(/^\d+$/)])
-    .nullable()
-    .optional(),
+  measurementTypeId: numericKeyId,
   measurementType: z.string().nullable().optional(),
-  inputId: z
-    .union([z.number().int(), z.string().regex(/^\d+$/)])
-    .nullable()
-    .optional(),
-  categoryId: z
-    .union([z.number().int(), z.string().regex(/^\d+$/)])
-    .nullable()
-    .optional(),
-});
-const synonymSchema = taxonRecordSchema.pick({
-  aphiaId: true,
-  scientificname: true,
-  authority: true,
-  status: true,
-  unacceptreason: true,
+  inputId: numericKeyId,
+  categoryId: numericKeyId,
 });
 
 /** WoRMS service; every method consumes the caller's existing absolute deadline. */
@@ -153,6 +152,20 @@ export class WormsService {
   /** Single record endpoint for accepted-name evidence workflows. */
   record(id: number, scope: WormsScope) {
     return request(scope, `AphiaRecordByAphiaID/${id}`, new URLSearchParams(), normalizeRecord);
+  }
+  /** Status read beside other evidence: a classified outage becomes statusError; rejection, cancellation, and deadline expiry still fail the call. */
+  async status(
+    id: number,
+    scope: WormsScope,
+  ): Promise<{
+    record: TaxonRecord | null;
+    statusError?: ReturnType<WormsScope['optionalError']>;
+  }> {
+    try {
+      return { record: await this.record(id, scope) };
+    } catch (error) {
+      return { record: null, statusError: scope.optionalError(error) };
+    }
   }
   /** Exact/fuzzy name batches preserve every submitted position and duplicate. */
   async names(
@@ -190,32 +203,44 @@ export class WormsService {
       )) ?? names.map(() => [])
     );
   }
-  /** Common-name search cannot apply marine/extant filters. */
-  async vernacularSearch(name: string, offset: number, scope: WormsScope) {
-    return (
-      (await request(
-        scope,
-        `AphiaRecordsByVernacular/${encodeURIComponent(name)}`,
-        new URLSearchParams({ offset: String(offset) }),
-        (data) => scan(data, scope, (row) => checked(matchSchema, normalizeRecord(row))),
-      )) ?? []
+  /** Common-name search cannot apply marine/extant filters; `like` matches names containing the text. */
+  vernacularSearch(name: string, like: boolean, offset: number, scope: WormsScope) {
+    return list(
+      scope,
+      `AphiaRecordsByVernacular/${encodeURIComponent(name)}`,
+      new URLSearchParams({ like: String(like), offset: String(offset) }),
+      (row) => checked(matchSchema, normalizeRecord(row)),
     );
   }
   /** Retrieve optional common-name evidence without inventing absence on failure. */
-  async vernaculars(id: number, scope: WormsScope) {
-    return (
-      (await request(scope, `AphiaVernacularsByAphiaID/${id}`, new URLSearchParams(), (data) =>
-        scan(data, scope, (row) =>
-          checked(
-            vernacularSchema,
-            mapped(object(row), {
-              vernacular: 'vernacular',
-              languageCode: 'language_code',
-              language: 'language',
-            }),
-          ),
-        ),
-      )) ?? []
+  vernaculars(id: number, scope: WormsScope) {
+    return list(scope, `AphiaVernacularsByAphiaID/${id}`, new URLSearchParams(), (row) =>
+      checked(
+        vernacularSchema,
+        mapped(object(row), {
+          vernacular: 'vernacular',
+          languageCode: 'language_code',
+          language: 'language',
+        }),
+      ),
+    );
+  }
+  /** Retrieve the complete, unpaged source list of one taxon in source order; 204 is an empty list. */
+  sources(id: number, scope: WormsScope) {
+    return list(scope, `AphiaSourcesByAphiaID/${id}`, new URLSearchParams(), (row) =>
+      checked(
+        sourceSchema,
+        mapped(object(row), {
+          sourceId: 'source_id',
+          use: 'use',
+          reference: 'reference',
+          page: 'page',
+          url: 'url',
+          link: 'link',
+          fulltext: 'fulltext',
+          doi: 'doi',
+        }),
+      ),
     );
   }
   /** Validate and flatten the complete root-to-tip classification iteratively. */
@@ -238,42 +263,36 @@ export class WormsService {
     });
   }
   /** One page of immediate children, without hidden lookahead. */
-  async children(
+  children(
     id: number,
     offset: number,
     marineOnly: boolean,
     extantOnly: boolean,
     scope: WormsScope,
   ) {
-    return (
-      (await request(
-        scope,
-        `AphiaChildrenByAphiaID/${id}`,
-        new URLSearchParams({
-          offset: String(offset),
-          marine_only: String(marineOnly),
-          extant_only: String(extantOnly),
-        }),
-        (data) => scan(data, scope, (row) => checked(childSchema, normalizeRecord(row))),
-      )) ?? []
+    return list(
+      scope,
+      `AphiaChildrenByAphiaID/${id}`,
+      new URLSearchParams({
+        offset: String(offset),
+        marine_only: String(marineOnly),
+        extant_only: String(extantOnly),
+      }),
+      (row) => checked(childSchema, normalizeRecord(row)),
     );
   }
   /** Retrieve the live rank vocabulary, retaining all rows and sparsity. */
-  async ranks(scope: WormsScope) {
-    return (
-      (await request(scope, 'AphiaTaxonRanksByID/-1', new URLSearchParams(), (data) =>
-        scan(data, scope, (row) =>
-          checked(
-            rankReferenceSchema,
-            mapped(object(row), {
-              taxonRankId: 'taxonRankID',
-              taxonRank: 'taxonRank',
-              kingdomAphiaId: 'AphiaID',
-              kingdom: 'kingdom',
-            }),
-          ),
-        ),
-      )) ?? []
+  ranks(scope: WormsScope) {
+    return list(scope, 'AphiaTaxonRanksByID/-1', new URLSearchParams(), (row) =>
+      checked(
+        rankReferenceSchema,
+        mapped(object(row), {
+          taxonRankId: 'taxonRankID',
+          taxonRank: 'taxonRank',
+          kingdomAphiaId: 'AphiaID',
+          kingdom: 'kingdom',
+        }),
+      ),
     );
   }
   /** Flatten attribute-key trees in preorder with explicit topology. */
@@ -332,40 +351,34 @@ export class WormsService {
     );
   }
   /** Retrieve one complete synonym page for an already resolved accepted taxon. */
-  async synonyms(id: number, offset: number, scope: WormsScope) {
-    return (
-      (await request(
-        scope,
-        `AphiaSynonymsByAphiaID/${id}`,
-        new URLSearchParams({ offset: String(offset) }),
-        (data) => scan(data, scope, (row) => checked(synonymSchema, normalizeRecord(row))),
-      )) ?? []
+  synonyms(id: number, offset: number, scope: WormsScope) {
+    return list(
+      scope,
+      `AphiaSynonymsByAphiaID/${id}`,
+      new URLSearchParams({ offset: String(offset) }),
+      (row) => checked(synonymSchema, normalizeRecord(row)),
     );
   }
   /** Complete distribution evidence; filtering belongs to the caller's local view. */
-  async distributions(id: number, scope: WormsScope) {
-    return (
-      (await request(scope, `AphiaDistributionsByAphiaID/${id}`, new URLSearchParams(), (data) =>
-        scan(data, scope, (row) =>
-          checked(
-            distributionSchema,
-            mapped(object(row), {
-              locality: 'locality',
-              locationId: 'locationID',
-              higherGeography: 'higherGeography',
-              higherGeographyId: 'higherGeographyID',
-              recordStatus: 'recordStatus',
-              qualityStatus: 'qualityStatus',
-              typeStatus: 'typeStatus',
-              establishmentMeans: 'establishmentMeans',
-              invasiveness: 'invasiveness',
-              occurrence: 'occurrence',
-              latitude: 'decimalLatitude',
-              longitude: 'decimalLongitude',
-            }),
-          ),
-        ),
-      )) ?? []
+  distributions(id: number, scope: WormsScope) {
+    return list(scope, `AphiaDistributionsByAphiaID/${id}`, new URLSearchParams(), (row) =>
+      checked(
+        distributionSchema,
+        mapped(object(row), {
+          locality: 'locality',
+          locationId: 'locationID',
+          higherGeography: 'higherGeography',
+          higherGeographyId: 'higherGeographyID',
+          recordStatus: 'recordStatus',
+          qualityStatus: 'qualityStatus',
+          typeStatus: 'typeStatus',
+          establishmentMeans: 'establishmentMeans',
+          invasiveness: 'invasiveness',
+          occurrence: 'occurrence',
+          latitude: 'decimalLatitude',
+          longitude: 'decimalLongitude',
+        }),
+      ),
     );
   }
   /** Complete attribute tree flattened iteratively in source preorder. */
@@ -434,14 +447,9 @@ export class WormsService {
     );
   }
   /** Retrieve one explicitly selected external identifier system. */
-  async externalIds(id: number, type: string, scope: WormsScope) {
-    return (
-      (await request(
-        scope,
-        `AphiaExternalIDByAphiaID/${id}`,
-        new URLSearchParams({ type }),
-        (data) => scan(data, scope, (value) => checked(z.string(), value)),
-      )) ?? []
+  externalIds(id: number, type: string, scope: WormsScope) {
+    return list(scope, `AphiaExternalIDByAphiaID/${id}`, new URLSearchParams({ type }), (value) =>
+      checked(z.string(), value),
     );
   }
   /** Reverse opaque identifiers without numeric coercion or supplementary reads. */

@@ -8,6 +8,7 @@ import {
   aphiaIdSchema,
   attribution,
   attributionSchema,
+  codecTrailer,
   formatData,
   getWormsService,
   localOffsetSchema,
@@ -16,8 +17,8 @@ import {
   offsetSchema,
   page,
   pageSchema,
-  renderData,
-  taxonRecordSchema,
+  segmentPage,
+  synonymSchema,
   WormsScope,
 } from '../../../services/worms/index.js';
 export const getSynonymsTool = tool('worms_get_synonyms', {
@@ -34,19 +35,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
     aphiaId: aphiaIdSchema,
     found: z.boolean().describe('Whether the supplied taxon exists.'),
     validAphiaId: aphiaIdSchema.nullable().describe('Accepted taxon ID when known.'),
-    synonyms: z
-      .array(
-        taxonRecordSchema
-          .pick({
-            aphiaId: true,
-            scientificname: true,
-            authority: true,
-            status: true,
-            unacceptreason: true,
-          })
-          .describe('Synonym name usage.'),
-      )
-      .describe('Whole synonym rows in this byte-budgeted segment.'),
+    synonyms: z.array(synonymSchema).describe('Whole synonym rows in this byte-budgeted segment.'),
     page: pageSchema.optional().describe('Pagination only when synonym retrieval occurred.'),
     guidance: z.string().nullable().describe('Next step when no accepted taxon is known.'),
     attribution: attributionSchema,
@@ -55,21 +44,18 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
     echo: z
       .object({ offset: z.number().describe('Requested one-based offset.') })
       .describe('Effective pagination.'),
-    notice: z.string().optional().describe('Empty synonym page guidance.'),
+    notice: z.string().optional().describe('Guidance for an empty synonym page past the first.'),
   },
-  enrichmentTrailer: {
-    echo: { render: (value) => renderData(value, '$["echo"]') },
-    notice: { render: (value) => renderData(value, '$["notice"]') },
-  },
+  enrichmentTrailer: codecTrailer('echo', 'notice'),
   errors: [
     {
       reason: 'upstream_rejected',
       code: JsonRpcErrorCode.ValidationError,
       when: 'HTTP 400/422 rejected the inputs.',
       recovery:
-        'Call worms_list_reference for valid vocabulary, then retry the original tool with corrected inputs.',
+        'Resolve the scientific name with worms_resolve_taxon for a valid AphiaID, then retry the same tool.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_rate_limited',
@@ -78,7 +64,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       recovery:
         'Wait for the stated retry delay, then retry the same tool with fewer concurrent calls.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_access_denied',
@@ -86,25 +72,23 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       when: 'Keyless upstream denies access.',
       recovery: 'Retry the same tool later; the keyless WoRMS service currently refuses access.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'Network, server, or HTML failure.',
-      recovery:
-        'Retry the same tool later; use worms_list_reference with topic: external_id_types for offline vocabulary.',
+      recovery: 'Retry the same tool later; the WoRMS service is currently unreachable or failing.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_timeout',
       code: JsonRpcErrorCode.Timeout,
       when: 'Request or whole-tool deadline expired.',
-      recovery:
-        'Retry the same tool later; call worms_crosswalk_id with one type to reduce crosswalk work.',
+      recovery: 'Retry the same tool later; WoRMS did not answer within the time limit.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_upstream_response',
@@ -112,7 +96,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       when: 'Malformed or incompatible upstream response.',
       recovery: 'Retry the same tool later; use worms_get_taxon to verify a known AphiaID.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'response_too_large',
@@ -121,7 +105,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       recovery:
         'Call worms_get_taxon for the taxon record; this tool cannot return the oversized WoRMS response.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
   ],
   async handler(input, ctx) {
@@ -134,7 +118,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       validAphiaId === null ? [] : await service.synonyms(validAphiaId, input.offset, scope);
     const enrichment = {
       echo: { offset: input.offset },
-      ...(validAphiaId !== null && synonyms.length === 0
+      ...(validAphiaId !== null && synonyms.length === 0 && input.offset > 1
         ? {
             notice:
               'No synonyms were returned for this page; call worms_get_synonyms with offset: 1 to inspect the first page.',
@@ -154,14 +138,11 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
         ...pagination,
         ...(validAphiaId !== null
           ? {
-              page: {
-                ...page(input.offset, synonyms.length),
-                returnedCount: segment.length,
-                nextOffset:
-                  pagination.nextResultOffset === null
-                    ? page(input.offset, synonyms.length).nextOffset
-                    : input.offset,
-              },
+              page: segmentPage(
+                page(input.offset, synonyms.length),
+                segment.length,
+                pagination.nextResultOffset === null,
+              ),
             }
           : {}),
         guidance:

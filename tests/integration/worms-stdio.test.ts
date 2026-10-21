@@ -94,6 +94,7 @@ it('initializes, lists eight tools, and round-trips real evidence over JSON-RPC'
         { nodeIndex: 1, parentIndex: 0, depth: 1, sourceId: '002' },
       ],
     });
+    expect(result.structuredContent).not.toHaveProperty('statusError');
     const invalid = await request('tools/call', {
       name: 'worms_crosswalk_id',
       arguments: { aphiaId: 1, type: 'gbif' },

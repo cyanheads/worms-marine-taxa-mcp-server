@@ -3,7 +3,7 @@
  * @module services/worms/budget
  */
 import { z } from '@cyanheads/mcp-ts-core';
-import { formatData, renderData } from './format.js';
+import { formatData, renderEnrichmentField } from './format.js';
 
 export const localOffsetSchema = z
   .number()
@@ -48,72 +48,90 @@ type Budget = {
   oversizedItem: boolean;
   requiredBytes?: number;
 };
+type LocalPage = Budget & {
+  resultOffset: number;
+  returnedCount: number;
+  totalCount: number;
+  nextResultOffset: number | null;
+};
+
+/** A last line the framework closes with a blank line: a block quote or a list item, ≤3 spaces in. */
+const LAZY_CONTAINER_LINE = /^ {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?: |$))/;
+
+/** Join trailer fields exactly as the framework does, so the pager measures the bytes it ships. */
+function joinTrailerFields(fields: string[]): string {
+  let text = '';
+  for (const field of fields) {
+    if (text)
+      text += LAZY_CONTAINER_LINE.test(text.slice(text.lastIndexOf('\n') + 1)) ? '\n\n' : '\n';
+    text += field;
+  }
+  return text;
+}
 
 /** Reproduce the framework's domain block and custom scientific enrichment trailer. */
-export function resultBytes(domain: unknown, enrichment: Record<string, unknown>) {
+function resultBytes(domain: object, enrichment: Record<string, unknown>) {
   const fields = Object.entries(enrichment).map(([key, value]) =>
-    renderData(value, `$[${JSON.stringify(key)}]`),
+    renderEnrichmentField(key, value),
   );
   const content = [
     ...formatData(domain),
-    ...(fields.length ? [{ type: 'text', text: `\n\n${fields.join('\n')}` }] : []),
+    ...(fields.length ? [{ type: 'text', text: `\n\n${joinTrailerFields(fields)}` }] : []),
   ];
   return Buffer.byteLength(
-    JSON.stringify({ structuredContent: { ...(domain as object), ...enrichment }, content }),
+    JSON.stringify({ structuredContent: { ...domain, ...enrichment }, content }),
   );
 }
 
-/** Largest whole-item prefix; reserve 1,000 bytes for protocol metadata added after formatting. */
-export function budgetPrefix<T>(
+/**
+ * Largest whole-item prefix; reserve 1,000 bytes for protocol metadata added after formatting.
+ * Enrichment that depends on the page is a function of each candidate, measured with that candidate.
+ */
+export function budgetPrefix<T extends object>(
   count: number,
   build: (take: number, budget: Budget) => T,
-  enrichment: Record<string, unknown>,
+  enrichment: Record<string, unknown> | ((page: T) => Record<string, unknown>),
   check: () => void,
 ): T {
-  const candidate = (take: number) =>
-    build(take, { byteBudget: 24000, budgetLimited: take < count, oversizedItem: false });
+  const enrichmentOf = typeof enrichment === 'function' ? enrichment : () => enrichment;
+  let best: T | undefined;
   let low = count ? 1 : 0;
   let high = count;
-  let best = candidate(low);
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
-    const value = candidate(mid);
-    const bytes = resultBytes(value, enrichment);
+    const value = build(mid, {
+      byteBudget: 24000,
+      budgetLimited: mid < count,
+      oversizedItem: false,
+    });
+    const bytes = resultBytes(value, enrichmentOf(value));
     check();
     if (bytes <= 23000) {
       best = value;
       low = mid + 1;
     } else high = mid - 1;
   }
-  const bytes = resultBytes(best, enrichment);
-  check();
-  if (bytes <= 23000) return best;
+  if (best !== undefined) return best;
   let requiredBytes = 0;
-  let oversized = build(count ? 1 : 0, {
-    byteBudget: 24000,
-    budgetLimited: count > 1,
-    oversizedItem: true,
-    requiredBytes,
-  });
   for (;;) {
-    const measured = resultBytes(oversized, enrichment);
-    check();
-    if (measured === requiredBytes) return oversized;
-    requiredBytes = measured;
-    oversized = build(count ? 1 : 0, {
+    const oversized = build(count ? 1 : 0, {
       byteBudget: 24000,
       budgetLimited: count > 1,
       oversizedItem: true,
       requiredBytes,
     });
+    const measured = resultBytes(oversized, enrichmentOf(oversized));
+    check();
+    if (measured === requiredBytes) return oversized;
+    requiredBytes = measured;
   }
 }
 
 /** Page an already normalized complete sequence, preserving original tree indices. */
-export function localSlice<T, R>(
+export function localSlice<T, R extends object>(
   items: T[],
   offset: number,
-  build: (rows: T[], pagination: z.infer<ReturnType<typeof pageSchema>>) => R,
+  build: (rows: T[], pagination: LocalPage) => R,
   enrichment: Record<string, unknown>,
   check: () => void,
 ): R {
@@ -131,7 +149,4 @@ export function localSlice<T, R>(
     enrichment,
     check,
   );
-}
-function pageSchema() {
-  return z.object(localPageFields);
 }

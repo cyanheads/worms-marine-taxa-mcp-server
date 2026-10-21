@@ -9,6 +9,7 @@ import {
   attribution,
   attributionSchema,
   budgetPrefix,
+  codecTrailer,
   crosswalkFailure,
   externalTypeSchema,
   externalTypes,
@@ -19,7 +20,6 @@ import {
   localPageFields,
   localSlice,
   optionalEvidenceTextSchema,
-  renderData,
   taxonRecordSchema,
   WormsScope,
 } from '../../../services/worms/index.js';
@@ -102,10 +102,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       .describe('Effective crosswalk selectors.'),
     notice: z.string().optional().describe('Partial-outage retry guidance.'),
   },
-  enrichmentTrailer: {
-    echo: { render: (value) => renderData(value, '$["echo"]') },
-    notice: { render: (value) => renderData(value, '$["notice"]') },
-  },
+  enrichmentTrailer: codecTrailer('echo', 'notice'),
   errors: [
     {
       reason: 'upstream_rejected',
@@ -114,7 +111,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       recovery:
         'Call worms_list_reference for valid vocabulary, then retry the original tool with corrected inputs.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_rate_limited',
@@ -123,7 +120,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       recovery:
         'Wait for the stated retry delay, then retry the same tool with fewer concurrent calls.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_access_denied',
@@ -131,7 +128,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       when: 'Keyless upstream denies access.',
       recovery: 'Retry the same tool later; the keyless WoRMS service currently refuses access.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_unavailable',
@@ -140,16 +137,16 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       recovery:
         'Retry the same tool later; use worms_list_reference with topic: external_id_types for offline vocabulary.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_timeout',
       code: JsonRpcErrorCode.Timeout,
       when: 'Request or whole-tool deadline expired.',
       recovery:
-        'Retry the same tool later; call worms_crosswalk_id with one type to reduce crosswalk work.',
+        'Retry the same tool later; if type was omitted, call worms_crosswalk_id with one type to reduce crosswalk work.',
       retryable: true,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_upstream_response',
@@ -157,7 +154,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       when: 'Malformed or incompatible upstream response.',
       recovery: 'Retry the same tool later; use worms_get_taxon to verify a known AphiaID.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'response_too_large',
@@ -166,7 +163,7 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       recovery:
         'Call worms_get_taxon for the taxon record; this tool cannot return the oversized WoRMS response.',
       retryable: false,
-      thrownBy: 'service' as const,
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_selector',
@@ -263,6 +260,10 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     const sequence = requestedTypes.flatMap((type) =>
       (ids[type] ?? []).map((identifier) => ({ type, identifier })),
     );
+    const typeTotals = Object.fromEntries(
+      Object.entries(ids).map(([type, values]) => [type, values.length]),
+    );
+    const forwardGuidance = sequence.length === 0 ? guidance : null;
     return localSlice(
       sequence,
       input.resultOffset,
@@ -280,12 +281,10 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
           ...(input.type !== undefined ? { type: input.type } : {}),
           found: null,
           ids: pagedIds,
-          typeTotals: Object.fromEntries(
-            Object.entries(ids).map(([type, values]) => [type, values.length]),
-          ),
+          typeTotals,
           failedTypes,
           record: null,
-          guidance: Object.values(ids).every((values) => values.length === 0) ? guidance : null,
+          guidance: forwardGuidance,
           attribution: attribution(),
         };
       },
