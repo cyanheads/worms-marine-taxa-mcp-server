@@ -17,7 +17,7 @@ All tools: `readOnlyHint: true`, `idempotentHint: true`; omit `destructiveHint`.
 
 ## Overview and requirements
 
-Wrap the keyless [WoRMS REST API](https://www.marinespecies.org/rest/) for name cleaning, taxonomic research, marine distribution inspection, traits, and identifier reconciliation. Use native HTTP rather than another client dependency. Support STDIO and Streamable HTTP, stateless operation without client round trips; upstream credentials are unnecessary. Transport authentication remains framework-managed.
+Wrap the keyless [WoRMS REST API](https://www.marinespecies.org/rest/) for name cleaning, taxonomic research, marine distribution inspection, traits, and identifier reconciliation. Its [OpenAPI specification](https://www.marinespecies.org/rest/api-docs/openapi.yaml) is the endpoint and response-schema reference. Use native HTTP rather than another client dependency. Support STDIO and Streamable HTTP, stateless operation without client round trips; upstream credentials are unnecessary. Transport authentication remains framework-managed.
 
 Use per-call retrieval only. [WoRMS terms](https://www.marinespecies.org/about.php#terms) permit attributed text use but prohibit redistributing the entire database without agreement; the [webservice guidance](https://www.marinespecies.org/aphia.php?p=webservice) prohibits complete harvesting and asks users to report their use. No numeric rate limit is published. Images are outside scope. Every result carries the attribution below; retain record citations unchanged. No hosting infrastructure is part of this implementation.
 
