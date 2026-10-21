@@ -1,0 +1,9 @@
+{
+  "worms-marine-taxa-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/worms-marine-taxa-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio"
+    }
+  }
+}

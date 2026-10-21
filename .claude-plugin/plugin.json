@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "worms-marine-taxa-mcp-server",
+  "version": "0.1.0",
+  "description": "Resolve WoRMS marine taxa, classifications, synonyms, distributions, traits, and identifiers via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
+  "repository": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "worms", "marine-biology", "taxonomy", "aphia", "biodiversity"],
+  "mcpServers": {
+    "worms-marine-taxa-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/worms-marine-taxa-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio"
+      }
+    }
+  }
+}
