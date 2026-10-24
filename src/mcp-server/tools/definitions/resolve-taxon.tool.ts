@@ -43,10 +43,9 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     names: z
       .array(textSchema)
       .min(1)
-      .max(500)
       .optional()
       .describe(
-        'Original scientific names; resubmit unchanged with continuation offsets, preserving duplicates.',
+        'Nonempty original scientific-name list, with no total-input ceiling; at most 50 positions fetched per call. Resubmit unchanged with continuation offsets, preserving duplicates.',
       ),
     vernacular: optionalTextSchema.describe(
       'Common name, mutually exclusive with names; blank means unset.',

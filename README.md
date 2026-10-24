@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/worms-marine-taxa-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/worms-marine-taxa-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/worms-marine-taxa-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/worms-marine-taxa-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/worms-marine-taxa-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/worms-marine-taxa-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -19,11 +19,19 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://worms-marine-taxa.caseyjhand.com/mcp](https://worms-marine-taxa.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Overview
 
 Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.marinespecies.org/). Resolve scientific or common names to AphiaIDs, follow accepted names, and pull classifications, synonyms, distributions, traits, and external identifiers from the keyless WoRMS REST API.
+
+Every AphiaID selector accepts a positive safe integer, a decimal string, or a canonical WoRMS LSID such as `urn:lsid:marinespecies.org:taxname:137205`; returned AphiaIDs remain numbers. For other LSIDs use `worms_crosswalk_id` with `externalId` and `type: "lsid"`, or resolve a scientific name with `worms_resolve_taxon`.
 
 ### Tools
 
@@ -42,7 +50,7 @@ Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.
 
 ### `worms_resolve_taxon` <sub>tool</sub>
 
-- `names` (1–500 scientific names, 50 per upstream request) or one `vernacular`, never both. `fuzzy: true` opts into TAXAMATCH matching; `marineOnly` and `extantOnly` default to `true` for names. Vernacular search matches a whole recorded common name, or with `vernacularMatch: "contains"` every recorded name containing the text (`grouper` finds no exact match but many by contains); it applies neither filter
+- A nonempty `names` list (no total-input ceiling, at most 50 per upstream request) or one `vernacular`, never both. `fuzzy: true` opts into TAXAMATCH matching; `marineOnly` and `extantOnly` default to `true` for names. Vernacular search matches a whole recorded common name, or with `vernacularMatch: "contains"` every recorded name containing the text (`grouper` finds no exact match but many by contains); it applies neither filter
 - Each result keeps its `inputIndex` (duplicates included), every match with `status`, `validAphiaId`, and `validName`, and a `guidance` line on a miss; continue with `nextInputOffset` and `nextMatchOffset`
 - Vernacular results page with the upstream `offset` (1-based, steps of 50) and the local `resultOffset`
 
@@ -50,9 +58,10 @@ Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.
 
 ### `worms_get_taxon` <sub>tool</sub>
 
-- Up to 500 `aphiaIds`, 50 fetched per request; continue with `nextInputOffset`. Unknown IDs stay in position as `found: false`
+- A nonempty `aphiaIds` list with no total-input ceiling, at most 50 fetched per request; continue with `nextInputOffset` using the unchanged list. Unknown IDs stay in position as `found: false`; every submitted element is validated before fetching
 - `includeVernaculars: true` (one ID only) adds common names, paged with `vernacularOffset`; a failed lookup returns `vernacularError` beside the record
-- `includeSources: true` (one ID only, not with `includeVernaculars`) adds the taxon's sources, such as its `original description` and `basis of record`, with `reference`, `page`, `url`, `link`, `fulltext`, and `doi` verbatim. WoRMS returns the whole list at once, so the tool pages it with `sourceOffset`; a failed lookup returns `sourcesError` beside the record
+- `includeSources: true` (one ID only, not with `includeVernaculars`) adds the taxon's sources, such as its `original description` and `basis of record`, with `reference`, `page`, `url`, `link`, `fulltext`, and `doi` verbatim. Optional `sourceUse: "original description"` filters whole use values ignoring case before `sourceOffset` and the byte budget; blanks omit the filter, populated values stay untrimmed. Continue `nextSourceOffset` with unchanged options to repeat the full primary record and reconstruct every selected row in order
+- Successful source results report `sourceTotalCount` for the complete selected bibliography and `unfilteredSourceCount` only with an effective filter. Notices distinguish no matching use, an empty bibliography, and a past-end offset. A failed lookup returns `sourcesError` beside the record without counts; `sourceUse` is inactive without `includeSources`
 
 ---
 
@@ -60,7 +69,7 @@ Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.
 
 - One `aphiaId`; `ranks` is the root-to-tip lineage, with `found: false` when WoRMS has none
 - `includeChildren: true` adds one 50-row page of direct children (`offset`, `marineOnly`, `extantOnly`); a failed children lookup returns `childrenError` beside the lineage
-- An AphiaID that is not the accepted name keeps its own recorded lineage, and a `notice` names the accepted AphiaID to call instead; a failed status lookup returns `statusError` beside the lineage
+- The submitted AphiaID keeps its own recorded lineage. A `notice` names its linked accepted AphiaID, or the preferred AphiaID for an accepted alternative representation; a failed status lookup returns `statusError` beside the lineage
 
 ---
 
@@ -73,17 +82,17 @@ Marine taxonomy from the [World Register of Marine Species (WoRMS)](https://www.
 
 ### `worms_get_distributions` <sub>tool</sub>
 
-- One `aphiaId`; optional `recordStatus` (`valid`, `doubtful`, `inaccurate`), `establishmentMeans`, `invasiveness`, and `occurrence` filters combine with AND. `recordStatus` is exact; the others are case-insensitive whole values, with observed values in `worms_list_reference` topic `distribution_terms`
+- One `aphiaId`; optional `recordStatus` (`valid`, `doubtful`, `inaccurate`), `establishmentMeans`, `invasiveness`, and `occurrence` filters combine with AND. `recordStatus` ignores case and surrounding whitespace and echoes its lowercase code; the others match case-insensitive whole values without trimming populated strings, with observed values in `worms_list_reference` topic `distribution_terms`. Blank filters are omitted
 - Reports `unfilteredCount` and `filteredCount`; rows carry the locality, its MarineRegions `locationId`, and status fields in source order
 - WoRMS attaches records to individual name usages, so by default the tool reads that AphiaID's own records. `includeSynonyms: true` combines the accepted taxon's records with those of its synonyms, 10 synonyms per call, each row tagged `sourceAphiaId`; `synonymUnion` reports the window, the `nextSynonymOffset` to continue from, and any `failedSynonyms`
-- A `notice` flags an AphiaID that is not the accepted name and names the accepted one; without `includeSynonyms`, a failed status lookup returns `statusError` beside the rows
+- A `notice` names the linked accepted AphiaID, distinguishing an accepted alternative representation from its preferred AphiaID; without `includeSynonyms`, a failed status lookup returns `statusError` beside the rows
 
 ---
 
 ### `worms_get_traits` <sub>tool</sub>
 
 - One `aphiaId`; `includeInherited` (default `true`) adds attributes recorded on higher taxa. On an accepted taxon WoRMS also returns attributes recorded on its synonyms whatever `includeInherited` is set to; `inheritedFrom` names the source taxon in both cases
-- A `notice` flags an AphiaID that is not the accepted name and names the accepted one; a failed status lookup returns `statusError` beside the attributes
+- A `notice` names the linked accepted AphiaID, distinguishing an accepted alternative representation from its preferred AphiaID; a failed status lookup returns `statusError` beside the attributes
 - Every node keeps `nodeIndex`, `parentIndex`, and `depth` from the full tree, so units and qualifiers stay attached to their values across pages; values and references are verbatim
 - `measurementType` (case-insensitive whole value, such as `Body size`) keeps each matching node with its subtree and ancestors, indices unchanged; `totalCount` counts that set and `unfilteredCount` the whole tree
 
@@ -121,6 +130,45 @@ Agent-friendly output:
 - Partial failure: optional lookups (`vernacularError`, `sourcesError`, `childrenError`, `statusError`), synonym-union `failedSynonyms`, and crosswalk `failedTypes` keep the data that did arrive, with typed reasons and recovery hints
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://worms-marine-taxa.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own configuration shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http worms-marine-taxa-mcp-server https://worms-marine-taxa.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "worms-marine-taxa-mcp-server": {
+      "type": "streamableHttp",
+      "url": "https://worms-marine-taxa.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "worms-marine-taxa-mcp-server": {
+      "url": "https://worms-marine-taxa.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 

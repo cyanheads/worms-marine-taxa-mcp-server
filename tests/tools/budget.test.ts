@@ -48,6 +48,116 @@ it('bounds complete results and reassembles Unicode distribution evidence', asyn
 });
 
 it.each(['names', 'ids'] as const)(
+  'walks 503 %s with duplicates, misses, mixed IDs, and split groups past position 500',
+  async (mode) => {
+    const inputs = Array.from({ length: 503 }, (_, index) =>
+      index === 501 ? 'A' : index % 11 === 0 ? 'Miss' : `B${index % 7}`,
+    );
+    const ids = inputs.map((name, index) =>
+      name === 'Miss'
+        ? 9
+        : index % 2
+          ? `urn:lsid:marinespecies.org:taxname:${(index % 7) + 1}`
+          : (index % 7) + 1,
+    );
+    const network = fakeFetch((url) => {
+      const sent = url.searchParams.getAll(mode === 'names' ? 'scientificnames[]' : 'aphiaids[]');
+      expect(sent.length).toBeLessThanOrEqual(50);
+      return Response.json(
+        sent.map((value) =>
+          mode === 'ids'
+            ? value === '9'
+              ? null
+              : record(Number(value))
+            : value === 'Miss'
+              ? []
+              : value === 'A'
+                ? Array.from({ length: 50 }, (_, index) =>
+                    record(1000 + index, { authority: 'x'.repeat(1000) }),
+                  )
+                : [record(Number(value.slice(1)) + 1)],
+        ),
+      );
+    });
+    const seen: {
+      inputIndex: number;
+      matches?: { aphiaId: number }[];
+      requestedAphiaId?: number;
+      found?: boolean;
+    }[] = [];
+    let inputOffset = 0;
+    let matchOffset = 0;
+    let calls = 0;
+    for (;;) {
+      const before = network.calls.length;
+      const result = await settle(
+        mode === 'names'
+          ? runToolContract(resolveTaxonTool, {
+              names: inputs,
+              inputOffset,
+              matchOffset,
+              fuzzy: true,
+            })
+          : runToolContract(getTaxonTool, { aphiaIds: ids, inputOffset }),
+      );
+      expectParity(result);
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
+      expect(network.calls.length - before).toBe(1);
+      const sent = network.calls
+        .at(-1)
+        ?.searchParams.getAll(mode === 'names' ? 'scientificnames[]' : 'aphiaids[]');
+      expect(sent).toEqual(
+        mode === 'names'
+          ? inputs.slice(inputOffset, inputOffset + 50)
+          : ids.slice(inputOffset, inputOffset + 50).map((id) => String(id).split(':').at(-1)),
+      );
+      const data = result.structuredContent as {
+        results: (typeof seen)[number][];
+        nextInputOffset: number | null;
+        nextMatchOffset: number | null;
+        deferredCount: number;
+      };
+      seen.push(...data.results);
+      calls++;
+      expect(data.deferredCount).toBe(
+        data.nextInputOffset === null ? 0 : 503 - data.nextInputOffset,
+      );
+      if (data.nextInputOffset === null) break;
+      expect(
+        data.nextInputOffset > inputOffset ||
+          (data.nextInputOffset === inputOffset && (data.nextMatchOffset ?? 0) > matchOffset),
+      ).toBe(true);
+      inputOffset = data.nextInputOffset;
+      matchOffset = data.nextMatchOffset ?? 0;
+    }
+    expect(new Set(seen.map((row) => row.inputIndex))).toEqual(
+      new Set(Array.from({ length: 503 }, (_, index) => index)),
+    );
+    for (let index = 0; index < 503; index++) {
+      const rows = seen.filter((row) => row.inputIndex === index);
+      if (mode === 'names')
+        expect(rows.flatMap((row) => row.matches ?? []).map((row) => row.aphiaId)).toEqual(
+          inputs[index] === 'Miss'
+            ? []
+            : index === 501
+              ? Array.from({ length: 50 }, (_, item) => 1000 + item)
+              : [(index % 7) + 1],
+        );
+      else
+        expect(rows).toMatchObject([
+          {
+            requestedAphiaId: inputs[index] === 'Miss' ? 9 : (index % 7) + 1,
+            found: inputs[index] !== 'Miss',
+          },
+        ]);
+      if (mode === 'ids' || index !== 501) expect(rows).toHaveLength(1);
+      else expect(rows.length).toBeGreaterThan(1);
+    }
+    expect(network.calls).toHaveLength(calls);
+  },
+);
+
+it.each(['names', 'ids'] as const)(
   'continues 500 duplicate maximum inputs without copying deferred %s',
   async (mode) => {
     const name = '海'.repeat(512);
@@ -466,61 +576,79 @@ it('pages singleton common names while repeating the unchanged full primary reco
   expect(collected).toEqual(rows);
 });
 
-it('pages a 631-row unpaged source list while repeating the unchanged full primary record', async () => {
-  const rows = Array.from({ length: 631 }, (_, i) => ({
-    source_id: 450000 + i,
-    use: i % 7 ? 'additional source' : 'context source (Deepsea)',
-    reference: `${i} ${'Calanus finmarchicus 海 [x] '.repeat(5 + (i % 30))}`,
-    page: i % 50 ? null : `${i}`,
-    url: `https://www.marinespecies.org/aphia.php?p=sourcedetails&id=${450000 + i}`,
-    link: i % 20 ? null : `https://hdl.handle.net/11250/${i} `,
-    fulltext: null,
-    doi: i % 4 ? null : `10.1000/${i}`,
-  }));
-  const primary = { aphiaId: 104464, scientificname: 'Calanus finmarchicus', authority: null };
-  const network = fakeFetch((url) =>
-    Response.json(
-      url.pathname === '/rest/AphiaRecordsByAphiaIDs'
-        ? [record(104464, { scientificname: primary.scientificname, authority: null })]
-        : rows,
-    ),
-  );
-  const collected: unknown[] = [];
-  let sourceOffset = 0;
-  let pages = 0;
-  for (;;) {
-    const result = await settle(
-      runToolContract(getTaxonTool, { aphiaIds: [104464], includeSources: true, sourceOffset }),
+it.each([undefined, 'CONTEXT SOURCE (DEEPSEA)'])(
+  'pages a 631-row unpaged source list with sourceUse %s while repeating the unchanged full primary record',
+  async (sourceUse) => {
+    const rows = Array.from({ length: 631 }, (_, position) => {
+      const i = position === 14 ? 7 : position;
+      return {
+        source_id: 450000 + i,
+        use: i % 7 ? 'additional source' : 'context source (Deepsea)',
+        reference: `${i} ${'Calanus finmarchicus 海 [x] '.repeat(5 + (i % 30))}`,
+        page: i % 50 ? null : `${i}`,
+        url: `https://www.marinespecies.org/aphia.php?p=sourcedetails&id=${450000 + i}`,
+        link: i % 20 ? null : `https://hdl.handle.net/11250/${i} `,
+        fulltext: null,
+        doi: i % 4 ? null : `10.1000/${i}`,
+      };
+    });
+    const primary = { aphiaId: 104464, scientificname: 'Calanus finmarchicus', authority: null };
+    const network = fakeFetch((url) =>
+      Response.json(
+        url.pathname === '/rest/AphiaRecordsByAphiaIDs'
+          ? [record(104464, { scientificname: primary.scientificname, authority: null })]
+          : rows,
+      ),
     );
-    pages++;
-    expectParity(result);
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
-    const data = result.structuredContent as {
-      results: { record: unknown; sources: unknown[] }[];
-      nextSourceOffset: number | null;
-      nextInputOffset: number | null;
-      nextVernacularOffset: null;
-      budgetLimited: boolean;
-    };
-    expect(data.results).toHaveLength(1);
-    expect(data.results[0]?.record).toEqual(primary);
-    expect(data.nextVernacularOffset).toBeNull();
-    collected.push(...data.results[0]!.sources);
-    if (data.nextSourceOffset === null) {
-      expect(data.nextInputOffset).toBeNull();
-      break;
+    const collected: unknown[] = [];
+    const selected =
+      sourceUse === undefined ? rows : rows.filter((row) => row.use === 'context source (Deepsea)');
+    let sourceOffset = 0;
+    let pages = 0;
+    for (;;) {
+      const result = await settle(
+        runToolContract(getTaxonTool, {
+          aphiaIds: [104464],
+          includeSources: true,
+          sourceOffset,
+          sourceUse,
+        }),
+      );
+      pages++;
+      expectParity(result);
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
+      const data = result.structuredContent as {
+        results: { record: unknown; sources: unknown[] }[];
+        nextSourceOffset: number | null;
+        nextInputOffset: number | null;
+        nextVernacularOffset: null;
+        budgetLimited: boolean;
+      };
+      expect(data.results).toHaveLength(1);
+      expect(data.results[0]?.record).toEqual(primary);
+      expect(data.results[0]).toMatchObject({
+        sourceTotalCount: selected.length,
+        ...(sourceUse ? { unfilteredSourceCount: 631 } : {}),
+      });
+      if (!sourceUse) expect(data.results[0]).not.toHaveProperty('unfilteredSourceCount');
+      expect(data.nextVernacularOffset).toBeNull();
+      collected.push(...data.results[0]!.sources);
+      if (data.nextSourceOffset === null) {
+        expect(data.nextInputOffset).toBeNull();
+        break;
+      }
+      expect(data.budgetLimited).toBe(true);
+      expect(data.nextInputOffset).toBe(0);
+      expect(data.nextSourceOffset).toBe(sourceOffset + data.results[0]!.sources.length);
+      sourceOffset = data.nextSourceOffset;
     }
-    expect(data.budgetLimited).toBe(true);
-    expect(data.nextInputOffset).toBe(0);
-    expect(data.nextSourceOffset).toBe(sourceOffset + data.results[0]!.sources.length);
-    sourceOffset = data.nextSourceOffset;
-  }
-  expect(collected).toEqual(
-    rows.map(({ source_id, ...fields }) => ({ sourceId: source_id, ...fields })),
-  );
-  expect(pages).toBeGreaterThan(1);
-  expect(network.calls).toHaveLength(pages * 2);
-});
+    expect(collected).toEqual(
+      selected.map(({ source_id, ...fields }) => ({ sourceId: source_id, ...fields })),
+    );
+    expect(pages).toBeGreaterThan(1);
+    expect(network.calls).toHaveLength(pages * 2);
+  },
+);
 
 it('discloses an oversized source row, advances past it, and ends past the list', async () => {
   const reference = '海'.repeat(10000);

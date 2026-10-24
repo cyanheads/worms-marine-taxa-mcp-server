@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
@@ -16,6 +17,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  normalizeAphiaId,
   offsetSchema,
   page,
   pageSchema,
@@ -43,13 +45,13 @@ const outputSchema = z.object({
 });
 export const getClassificationTool = tool('worms_get_classification', {
   description:
-    'Retrieve root-to-tip classification and optional direct children for an AphiaID from worms_resolve_taxon. resultOffset indexes lineage followed by fetched children; consume nextResultOffset with unchanged options and upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Missing ranks remain unknown; child offset and filters are inactive without includeChildren. A full fetched 50-row child page has uncertain continuation and can lead to an empty page. An AphiaID that is not the accepted name keeps its own recorded lineage, and a notice names the accepted AphiaID.',
+    'Retrieve root-to-tip classification and optional direct children for an AphiaID or canonical WoRMS LSID. resultOffset indexes lineage followed by fetched children; consume nextResultOffset with unchanged options and upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Missing ranks remain unknown; child offset and filters are inactive without includeChildren. A full fetched 50-row child page has uncertain continuation and can lead to an empty page. The submitted ID keeps its own recorded lineage; a notice names its linked accepted ID, distinguishing an accepted alternative representation from its preferred ID.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     resultOffset: localOffsetSchema.describe(
       'Zero-based position in lineage followed by fetched children; keep upstream offset unchanged until nextResultOffset is null.',
     ),
-    aphiaId: aphiaIdSchema,
+    aphiaId: aphiaIdInputSchema,
     includeChildren: z.boolean().default(false).describe('Also fetch one page of direct children.'),
     offset: offsetSchema,
     marineOnly: z
@@ -66,7 +68,9 @@ export const getClassificationTool = tool('worms_get_classification', {
     notice: z
       .string()
       .optional()
-      .describe('Unaccepted-AphiaID and empty-children-page guidance, in that order.'),
+      .describe(
+        'Linked accepted/preferred-AphiaID and empty-children-page guidance, in that order.',
+      ),
     echo: z
       .object({
         includeChildren: z.boolean().describe('Whether children requested.'),
@@ -138,7 +142,8 @@ export const getClassificationTool = tool('worms_get_classification', {
       thrownBy: 'service',
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = { ...raw, aphiaId: normalizeAphiaId(raw.aphiaId) };
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     const { record, statusError } = await service.status(input.aphiaId, scope);

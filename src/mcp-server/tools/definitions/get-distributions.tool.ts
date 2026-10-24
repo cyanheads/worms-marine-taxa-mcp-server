@@ -6,10 +6,10 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
-  blankAsUnset,
   codecTrailer,
   distributionSchema,
   formatData,
@@ -18,6 +18,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  normalizeAphiaId,
   optionalEvidenceTextSchema,
   statusErrorSchema,
   statusNotice,
@@ -119,14 +120,21 @@ async function unionWindow(aphiaId: number, synonymOffset: number, scope: WormsS
     statusFragment:
       acceptedAphiaId === aphiaId
         ? undefined
-        : `AphiaID ${aphiaId} is not the accepted name; these rows combine accepted AphiaID ${acceptedAphiaId} and its synonyms.`,
+        : record?.status === 'alternative representation'
+          ? `AphiaID ${aphiaId} is an accepted alternative representation; these rows combine preferred AphiaID ${acceptedAphiaId} and its synonyms.`
+          : `AphiaID ${aphiaId} is not the accepted name; these rows combine accepted AphiaID ${acceptedAphiaId} and its synonyms.`,
   };
 }
 
 const filtersSchema = z.object({
   recordStatus: z
-    .preprocess(blankAsUnset, z.enum(['valid', 'doubtful', 'inaccurate']).optional())
-    .describe('Exact record status; blank means no filter.'),
+    .preprocess(
+      (value) => (typeof value === 'string' ? value.trim().toLowerCase() || undefined : value),
+      z.enum(['valid', 'doubtful', 'inaccurate']).optional(),
+    )
+    .describe(
+      'Record status valid, doubtful, or inaccurate; ignores case and surrounding whitespace; blank means no filter.',
+    ),
   establishmentMeans: optionalEvidenceTextSchema.describe(
     'Case-insensitive whole-value establishment filter, such as Alien; blank omitted. Observed values: worms_list_reference topic: distribution_terms.',
   ),
@@ -139,10 +147,10 @@ const filtersSchema = z.object({
 });
 export const getDistributionsTool = tool('worms_get_distributions', {
   description:
-    "Retrieve recorded distributions for an AphiaID from worms_resolve_taxon in byte-budgeted segments; resume nextResultOffset as resultOffset with unchanged selectors and filters. WoRMS attaches records to individual name usages, so one AphiaID's rows can miss those of its synonyms: includeSynonyms combines the accepted taxon's rows with those of up to 10 synonyms per call, each row tagged sourceAphiaId; consume nextResultOffset before advancing synonymOffset to synonymUnion.nextSynonymOffset with resultOffset 0. Filters apply to the complete fetched set before pagination and combine by conjunction: recordStatus is exact, others use case-insensitive whole-value equality. Rows retain duplicates and source order; no rows does not prove biological or taxon absence. A notice flags an AphiaID that is not the accepted name.",
+    "Retrieve recorded distributions for an AphiaID or canonical WoRMS LSID in byte-budgeted segments; resume nextResultOffset as resultOffset with unchanged selectors and filters. WoRMS attaches records to individual name usages, so one AphiaID's rows can miss those of its synonyms: includeSynonyms combines the accepted taxon's rows with those of up to 10 synonyms per call, each row tagged sourceAphiaId; consume nextResultOffset before advancing synonymOffset to synonymUnion.nextSynonymOffset with resultOffset 0. Filters apply to the complete fetched set before pagination and combine by conjunction: recordStatus normalizes case and surrounding whitespace before exact matching; others use case-insensitive whole-value equality without trimming. Rows retain duplicates and source order; no rows does not prove biological or taxon absence. A notice names the linked accepted ID, distinguishing an accepted alternative representation from its preferred ID.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: filtersSchema.extend({
-    aphiaId: aphiaIdSchema,
+    aphiaId: aphiaIdInputSchema,
     resultOffset: localOffsetSchema,
     includeSynonyms: z
       .boolean()
@@ -170,11 +178,13 @@ export const getDistributionsTool = tool('worms_get_distributions', {
     attribution: attributionSchema,
   }),
   enrichment: {
-    echo: filtersSchema.describe('Only effective filters with original values.'),
+    echo: filtersSchema.describe(
+      'Only effective filters; recordStatus is canonical lowercase, other populated values are unchanged.',
+    ),
     notice: z
       .string()
       .optional()
-      .describe('Unaccepted-AphiaID and empty-evidence guidance, in that order.'),
+      .describe('Linked accepted/preferred-AphiaID and empty-evidence guidance, in that order.'),
   },
   enrichmentTrailer: codecTrailer('echo', 'notice'),
   errors: [
@@ -238,7 +248,8 @@ export const getDistributionsTool = tool('worms_get_distributions', {
       thrownBy: 'service',
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = { ...raw, aphiaId: normalizeAphiaId(raw.aphiaId) };
     using scope = new WormsScope(ctx);
     let rows: Row[];
     let synonymUnion: z.infer<typeof synonymUnionSchema> | undefined;

@@ -669,6 +669,183 @@ const sourceRows = [
 ];
 
 describe('taxon retrieval', () => {
+  it.each(['missing', 'failure'])(
+    'omits filtered source counts after a %s primary/source read',
+    async (mode) => {
+      const network = fakeFetch((url) =>
+        url.pathname === '/rest/AphiaRecordsByAphiaIDs'
+          ? Response.json(mode === 'missing' ? [null] : [record(1)])
+          : new Response(null, { status: 403 }),
+      );
+      const result = await settle(
+        runToolContract(getTaxonTool, {
+          aphiaIds: [1],
+          includeSources: true,
+          sourceUse: 'original description',
+        }),
+      );
+      expectParity(result);
+      for (const key of ['sourceTotalCount', 'unfilteredSourceCount', 'sources'])
+        expect(result.structuredContent).not.toHaveProperty(`results.0.${key}`);
+      expect(network.calls).toHaveLength(mode === 'missing' ? 1 : 2);
+      if (mode === 'failure')
+        expect(result.structuredContent).toMatchObject({
+          results: [{ sourcesError: { reason: 'upstream_access_denied' } }],
+        });
+    },
+  );
+  it('rejects an oversized sourceUse before primary retrieval', async () => {
+    offline();
+    const result = await settle(
+      runToolContract(getTaxonTool, {
+        aphiaIds: [1],
+        includeSources: true,
+        sourceUse: 'x'.repeat(513),
+      }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
+  });
+  it.each(['original description', 'ORIGINAL DESCRIPTION'])(
+    'filters complete sources by whole use %s before offset and preserves every field',
+    async (sourceUse) => {
+      const selected = {
+        source_id: 90278,
+        use: 'original description',
+        reference: 'A\r\n\n`|<>',
+        page: null,
+        url: 'https://example.org/a_(b)',
+        link: '',
+        fulltext: null,
+        doi: '10.1/x',
+      };
+      const rows = Array.from({ length: 631 }, (_, index) =>
+        index === 627
+          ? selected
+          : { source_id: index, use: index === 628 ? null : 'additional source' },
+      );
+      rows.push(selected);
+      const network = fakeFetch((url) =>
+        Response.json(url.pathname === '/rest/AphiaRecordsByAphiaIDs' ? [record(104464)] : rows),
+      );
+      const result = await settle(
+        runToolContract(getTaxonTool, {
+          aphiaIds: [104464],
+          includeSources: true,
+          sourceUse,
+          sourceOffset: 1,
+        }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            record: { aphiaId: 104464 },
+            sourceTotalCount: 2,
+            unfilteredSourceCount: 632,
+            sources: [
+              {
+                sourceId: 90278,
+                ...Object.fromEntries(
+                  Object.entries(selected).filter(([key]) => key !== 'source_id'),
+                ),
+              },
+            ],
+          },
+        ],
+        nextSourceOffset: null,
+        echo: { sourceUse },
+      });
+      expect(network.calls).toHaveLength(2);
+    },
+  );
+  it.each(['original', ' original description ', 'unknown'])(
+    'reports no matching source use %s without inventing an empty bibliography',
+    async (sourceUse) => {
+      fakeFetch((url) =>
+        Response.json(
+          url.pathname === '/rest/AphiaRecordsByAphiaIDs'
+            ? [record(1)]
+            : [{ use: 'original description' }, { use: null }, {}],
+        ),
+      );
+      const result = await settle(
+        runToolContract(getTaxonTool, {
+          aphiaIds: [1],
+          includeSources: true,
+          sourceUse,
+          sourceOffset: 99,
+        }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        results: [{ sources: [], sourceTotalCount: 0, unfilteredSourceCount: 3 }],
+        notice: expect.stringContaining('remove or change sourceUse'),
+        echo: { sourceUse },
+      });
+      expect(contentText(result)).not.toContain('sourceOffset: 0');
+    },
+  );
+  it.each(['', ' \r\n '])(
+    'omits blank sourceUse %j and reports successful unfiltered counts',
+    async (sourceUse) => {
+      fakeFetch((url) =>
+        Response.json(url.pathname === '/rest/AphiaRecordsByAphiaIDs' ? [record(1)] : sourceRows),
+      );
+      const result = await settle(
+        runToolContract(getTaxonTool, { aphiaIds: [1], includeSources: true, sourceUse }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({ results: [{ sourceTotalCount: 5 }] });
+      expect(result.structuredContent).not.toHaveProperty('results.0.unfilteredSourceCount');
+      expect(result.structuredContent).not.toHaveProperty('echo.sourceUse');
+    },
+  );
+  it.each([false, true])(
+    'distinguishes empty sources from past-end selection (empty %s)',
+    async (empty) => {
+      fakeFetch((url) =>
+        Response.json(
+          url.pathname === '/rest/AphiaRecordsByAphiaIDs'
+            ? [record(1)]
+            : empty
+              ? []
+              : [{ use: 'original description' }],
+        ),
+      );
+      const result = await settle(
+        runToolContract(getTaxonTool, {
+          aphiaIds: [1],
+          includeSources: true,
+          sourceUse: 'original description',
+          sourceOffset: 99,
+        }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          { sources: [], sourceTotalCount: empty ? 0 : 1, unfilteredSourceCount: empty ? 0 : 1 },
+        ],
+        notice: expect.stringContaining(empty ? 'No sources were returned' : 'sourceOffset: 0'),
+      });
+      if (empty) expect(contentText(result)).not.toContain('sourceOffset: 0');
+    },
+  );
+  it('keeps sourceUse inactive without includeSources', async () => {
+    const network = fakeFetch(() => Response.json([record(1)]));
+    const result = await settle(
+      runToolContract(getTaxonTool, { aphiaIds: [1], sourceUse: 'original description' }),
+    );
+    expectParity(result);
+    for (const key of [
+      'results.0.sources',
+      'results.0.sourceTotalCount',
+      'results.0.unfilteredSourceCount',
+      'echo.sourceUse',
+    ])
+      expect(result.structuredContent).not.toHaveProperty(key);
+    expect(network.calls).toHaveLength(1);
+  });
   it('accepts 500 IDs and preserves all 450 deferred positions', async () => {
     const ids = Array.from({ length: 500 }, (_, index) => (index % 67) + 1);
     const network = fakeFetch((url) => {
@@ -936,6 +1113,8 @@ describe('taxon retrieval', () => {
     expect(result.structuredContent).not.toHaveProperty('results.0.sources');
     expect(result.structuredContent).not.toHaveProperty('results.0.sourcesError');
     expect(network.calls.map((url) => url.pathname)).toEqual(['/rest/AphiaRecordsByAphiaIDs']);
+    expect(result.structuredContent).not.toHaveProperty('results.0.sourceTotalCount');
+    expect(result.structuredContent).not.toHaveProperty('results.0.unfilteredSourceCount');
   });
   it.each(
     (
@@ -988,6 +1167,10 @@ describe('taxon retrieval', () => {
           [next]: null,
         });
         expect(result.structuredContent).not.toHaveProperty(`results.0.${field}`);
+        if (option === 'includeSources') {
+          expect(result.structuredContent).not.toHaveProperty('results.0.sourceTotalCount');
+          expect(result.structuredContent).not.toHaveProperty('results.0.unfilteredSourceCount');
+        }
       }
       expect(network.calls).toHaveLength(calls);
       expect(JSON.stringify(result)).not.toContain('private upstream body');
@@ -1162,9 +1345,95 @@ describe('classification', () => {
 });
 
 describe('schema boundaries', () => {
-  it('rejects empty, oversized, and invalid scientific batches before network', async () => {
+  it.each([503, 900])(
+    'terminates long checklists at inputOffset %i without requests',
+    async (inputOffset) => {
+      offline();
+      for (const result of [
+        await settle(runToolContract(getTaxonTool, { aphiaIds: Array(503).fill(1), inputOffset })),
+        await settle(
+          runToolContract(resolveTaxonTool, { names: Array(503).fill('A'), inputOffset }),
+        ),
+      ]) {
+        expectParity(result);
+        expect(result.structuredContent).toMatchObject({
+          results: [],
+          nextInputOffset: null,
+          deferredCount: 0,
+        });
+      }
+    },
+  );
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid long-checklist inputOffset %i before requests',
+    async (inputOffset) => {
+      offline();
+      for (const result of [
+        await settle(runToolContract(getTaxonTool, { aphiaIds: Array(503).fill(1), inputOffset })),
+        await settle(
+          runToolContract(resolveTaxonTool, { names: Array(503).fill('A'), inputOffset }),
+        ),
+      ])
+        expect(result.isError).toBe(true);
+    },
+  );
+  it.each([
+    getClassificationTool,
+    getSynonymsTool,
+    getDistributionsTool,
+    getTraitsTool,
+    crosswalkIdTool,
+  ])('$name normalizes a canonical LSID before every upstream selector', async (tool) => {
+    const network = fakeFetch((url) => {
+      expect(url.pathname.endsWith('/137205')).toBe(true);
+      if (url.pathname.includes('AphiaRecordByAphiaID'))
+        return Response.json(record(137205, { status: 'accepted', valid_AphiaID: 137205 }));
+      if (url.pathname.includes('AphiaClassificationByAphiaID'))
+        return Response.json({ AphiaID: 2, child: { AphiaID: 137205 } });
+      return Response.json([]);
+    });
+    const result = await settle(
+      runToolContract(tool, {
+        aphiaId: 'urn:lsid:marinespecies.org:taxname:137205',
+        ...(tool === crosswalkIdTool ? { type: 'lsid' } : {}),
+      }),
+    );
+    expectParity(result);
+    expect(result.structuredContent).toMatchObject({ aphiaId: 137205 });
+    expect(network.calls.length).toBe(tool === crosswalkIdTool ? 1 : 2);
+    expect(
+      tool.output.safeParse({ ...tool.output.parse(result.structuredContent), aphiaId: '137205' })
+        .success,
+    ).toBe(false);
+  });
+  it.each([
+    'urn:lsid:example.org:taxname:1',
+    'urn:lsid:marinespecies.org:taxname:0',
+    'urn:lsid:marinespecies.org:taxname:9007199254740992',
+    'urn:lsid:marinespecies.org:taxname:1.5',
+    'urn:lsid:marinespecies.org:taxname:-1',
+    'urn:lsid:marinespecies.org:taxname:1:2',
+    'Gadus morhua',
+    '1e3',
+    '0x10',
+  ])('rejects unrecognized ID %s with crosswalk guidance before requests', async (aphiaId) => {
     offline();
-    for (const names of [[], [' '], Array.from({ length: 501 }, () => 'A'), ['x'.repeat(513)]]) {
+    const result = await settle(runToolContract(getTaxonTool, { aphiaIds: [aphiaId] }));
+    expect(result.isError).toBe(true);
+    const text = contentText(result);
+    expect(text).toContain('worms_crosswalk_id');
+    expect(text).toContain('externalId');
+    expect(text).toContain('lsid');
+    expect(text).toContain('worms_resolve_taxon');
+  });
+  it('rejects empty and invalid scientific batches, including malformed deferred tails, before network', async () => {
+    offline();
+    for (const names of [
+      [],
+      [' '],
+      [...Array.from({ length: 501 }, () => 'A'), ' '],
+      ['x'.repeat(513)],
+    ]) {
       const result = await settle(runToolContract(resolveTaxonTool, { names }));
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
@@ -1178,7 +1447,7 @@ describe('schema boundaries', () => {
       [-1],
       [1.5],
       [Number.MAX_SAFE_INTEGER + 1],
-      Array.from({ length: 501 }, () => 1),
+      [...Array.from({ length: 501 }, () => 1), 0],
     ]) {
       const result = await settle(runToolContract(getTaxonTool, { aphiaIds }));
       expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });

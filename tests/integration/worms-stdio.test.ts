@@ -80,6 +80,23 @@ it('initializes, lists eight tools, and round-trips real evidence over JSON-RPC'
     );
     const catalog = await request('tools/list', {});
     expect((catalog.result as { tools: unknown[] }).tools).toHaveLength(8);
+    const taxon = (catalog.result as { tools: { name: string }[] }).tools.find(
+      (tool) => tool.name === 'worms_get_taxon',
+    );
+    expect(taxon).toMatchObject({
+      inputSchema: {
+        properties: {
+          aphiaIds: {
+            items: {
+              anyOf: expect.arrayContaining([
+                expect.objectContaining({ type: 'integer' }),
+                expect.objectContaining({ type: 'string' }),
+              ]),
+            },
+          },
+        },
+      },
+    });
     const called = await request('tools/call', {
       name: 'worms_get_traits',
       arguments: { aphiaId: 1 },
@@ -95,6 +112,59 @@ it('initializes, lists eight tools, and round-trips real evidence over JSON-RPC'
       ],
     });
     expect(result.structuredContent).not.toHaveProperty('statusError');
+    for (const aphiaIds of [[1], ['1'], [' 1 '], '[1]']) {
+      const repaired = await request('tools/call', {
+        name: 'worms_get_taxon',
+        arguments: { aphiaIds },
+      });
+      const value = repaired.result as Awaited<ReturnType<typeof runToolContract>>;
+      expectParity(value);
+      expect(value.structuredContent).toMatchObject({
+        results: [{ requestedAphiaId: 1, record: { aphiaId: 1 } }],
+      });
+    }
+    const scalar = await request('tools/call', {
+      name: 'worms_get_traits',
+      arguments: { aphiaId: '1' },
+    });
+    expectParity(scalar.result as Awaited<ReturnType<typeof runToolContract>>);
+    expect(
+      (scalar.result as Awaited<ReturnType<typeof runToolContract>>).structuredContent,
+    ).toMatchObject({ aphiaId: 1, traits: [{ measurementTypeId: '001' }, { sourceId: '002' }] });
+    const names = await request('tools/call', {
+      name: 'worms_resolve_taxon',
+      arguments: { names: 'Gadus morhua' },
+    });
+    expectParity(names.result as Awaited<ReturnType<typeof runToolContract>>);
+    expect(
+      (names.result as Awaited<ReturnType<typeof runToolContract>>).structuredContent,
+    ).toMatchObject({ results: [{ inputIndex: 0, matches: [{ aphiaId: 1 }] }] });
+    const lsid = await request('tools/call', {
+      name: 'worms_get_taxon',
+      arguments: { aphiaIds: ['urn:lsid:marinespecies.org:taxname:1'] },
+    });
+    expectParity(lsid.result as Awaited<ReturnType<typeof runToolContract>>);
+    expect(
+      (lsid.result as Awaited<ReturnType<typeof runToolContract>>).structuredContent,
+    ).toMatchObject({ results: [{ requestedAphiaId: 1 }] });
+    for (const name of [
+      'worms_get_classification',
+      'worms_get_synonyms',
+      'worms_get_distributions',
+      'worms_get_traits',
+      'worms_crosswalk_id',
+    ]) {
+      const response = await request('tools/call', {
+        name,
+        arguments: {
+          aphiaId: 'urn:lsid:marinespecies.org:taxname:1',
+          ...(name === 'worms_crosswalk_id' ? { type: 'lsid' } : {}),
+        },
+      });
+      const value = response.result as Awaited<ReturnType<typeof runToolContract>>;
+      expectParity(value);
+      expect(value.structuredContent).toMatchObject({ aphiaId: 1 });
+    }
     const invalid = await request('tools/call', {
       name: 'worms_crosswalk_id',
       arguments: { aphiaId: 1, type: 'gbif' },

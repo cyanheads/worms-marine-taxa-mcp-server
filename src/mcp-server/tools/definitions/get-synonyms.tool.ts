@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
@@ -14,6 +15,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  normalizeAphiaId,
   offsetSchema,
   page,
   pageSchema,
@@ -26,7 +28,7 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
     'Retrieve synonyms for the accepted taxon linked from an AphiaID obtained with worms_resolve_taxon. Consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. A present name without an accepted ID has no synonym lookup; inspect it with worms_get_taxon. A full fetched 50-row page has uncertain continuation and may lead to an empty page.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    aphiaId: aphiaIdSchema,
+    aphiaId: aphiaIdInputSchema,
     offset: offsetSchema,
     resultOffset: localOffsetSchema,
   }),
@@ -108,7 +110,8 @@ export const getSynonymsTool = tool('worms_get_synonyms', {
       thrownBy: 'service',
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = { ...raw, aphiaId: normalizeAphiaId(raw.aphiaId) };
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     const record = await service.record(input.aphiaId, scope);

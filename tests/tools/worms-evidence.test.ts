@@ -151,6 +151,48 @@ describe('synonym evidence', () => {
 });
 
 describe('distribution evidence', () => {
+  it.each(['valid', 'doubtful', 'inaccurate'] as const)(
+    'normalizes controlled status %s before conjunctive filtering and continuation',
+    async (status) => {
+      fakeFetch(
+        withStatus(null, () =>
+          Response.json([
+            { recordStatus: status, occurrence: 'Present' },
+            { recordStatus: status, occurrence: 'Present' },
+            { recordStatus: status.toUpperCase(), occurrence: 'Present' },
+            { recordStatus: status, occurrence: 'Absent' },
+          ]),
+        ),
+      );
+      const result = await settle(
+        runToolContract(getDistributionsTool, {
+          aphiaId: 1,
+          recordStatus: ` \t${status.toUpperCase()}\n`,
+          occurrence: 'PRESENT',
+          resultOffset: 1,
+        }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        unfilteredCount: 4,
+        filteredCount: 2,
+        distributions: [{ recordStatus: status, occurrence: 'Present' }],
+        echo: { recordStatus: status, occurrence: 'PRESENT' },
+      });
+    },
+  );
+  it.each(['unknown', 1, false])(
+    'rejects invalid controlled status %s with allowed codes',
+    async (recordStatus) => {
+      offline();
+      const result = await settle(
+        runToolContract(getDistributionsTool, { aphiaId: 1, recordStatus }),
+      );
+      expect(result.isError).toBe(true);
+      for (const code of ['valid', 'doubtful', 'inaccurate'])
+        expect(contentText(result)).toContain(code);
+    },
+  );
   const matching = {
     locality: 'Sea\r\n\n`|<>',
     locationID: '001',
@@ -899,6 +941,38 @@ const forced = (failure: 'timeout' | number, init: RequestInit | undefined) =>
   failure === 'timeout' ? hang(init) : new Response(null, { status: failure });
 
 describe('taxonomic status on evidence tools', () => {
+  it.each([getClassificationTool, getDistributionsTool, getTraitsTool])(
+    '$name identifies an accepted alternative and preferred ID while retaining submitted evidence',
+    async (tool) => {
+      const network = upstream({
+        records: {
+          1804094: record(1804094, {
+            status: 'alternative representation',
+            valid_AphiaID: 140480,
+            scientificname: 'upstream name must stay out',
+          }),
+        },
+        classification: { 1804094: { AphiaID: 2, child: { AphiaID: 1804094 } } },
+        distributions: { 1804094: [{ locality: 'A' }] },
+        attributes: { 1804094: [{ measurementType: 'A', children: [{ measurementValue: 'B' }] }] },
+      });
+      const result = await settle(runToolContract(tool, { aphiaId: 1804094 }));
+      expectParity(result);
+      const data = result.structuredContent as { notice: string };
+      expect(data.notice).toContain(
+        'AphiaID 1804094 is an accepted alternative representation; WoRMS links it to preferred AphiaID 140480.',
+      );
+      expect(data.notice).toContain(`${tool.name} with aphiaId: 140480`);
+      expect(data.notice).not.toContain('not the accepted');
+      expect(data.notice).not.toContain('upstream name');
+      expect(network.calls).toHaveLength(2);
+      expect(network.calls.every((url) => url.pathname.endsWith('/1804094'))).toBe(true);
+      if (tool === getClassificationTool)
+        expect(result.structuredContent).toMatchObject({
+          ranks: [{ aphiaId: 2 }, { aphiaId: 1804094 }],
+        });
+    },
+  );
   const unaccepted = record(1298345, {
     scientificname: 'Testudo caretta',
     status: 'superseded combination',
@@ -1145,6 +1219,65 @@ describe('recovery hints after a forced timeout or outage', () => {
 });
 
 describe('distribution synonym union', () => {
+  it('identifies an accepted alternative while paging preferred-ID and synonym rows', async () => {
+    const rows = Array.from({ length: 80 }, (_, index) => ({
+      locality: `${index}:${'x'.repeat(300)}`,
+    }));
+    const network = upstream({
+      records: {
+        1804094: record(1804094, { status: 'alternative representation', valid_AphiaID: 140480 }),
+      },
+      synonyms: { 140480: [record(3)] },
+      distributions: { 140480: rows, 3: [{ locality: 'synonym' }] },
+    });
+    const collected = await collectLocal(async (resultOffset) => {
+      const before = network.calls.length;
+      const result = await settle(
+        runToolContract(getDistributionsTool, {
+          aphiaId: 1804094,
+          includeSynonyms: true,
+          resultOffset,
+        }),
+      );
+      expect(result.structuredContent).toMatchObject({
+        notice:
+          'AphiaID 1804094 is an accepted alternative representation; these rows combine preferred AphiaID 140480 and its synonyms.',
+        synonymUnion: { acceptedAphiaId: 140480, synonymAphiaIds: [3] },
+      });
+      expect(network.calls.length - before).toBe(4);
+      return result;
+    }, 'distributions');
+    expect(collected).toEqual([
+      ...rows.map((row) => ({ sourceAphiaId: 140480, ...row })),
+      { sourceAphiaId: 3, locality: 'synonym' },
+    ]);
+  });
+  it('normalizes recordStatus in a synonym union before local continuation', async () => {
+    const network = upstream({
+      records: { 1: record(1, { status: 'accepted' }) },
+      synonyms: { 1: [record(2)] },
+      distributions: {
+        1: [{ recordStatus: 'valid', locality: 'A' }],
+        2: [{ recordStatus: 'valid', locality: 'B' }],
+      },
+    });
+    const result = await settle(
+      runToolContract(getDistributionsTool, {
+        aphiaId: 1,
+        includeSynonyms: true,
+        recordStatus: ' VaLiD ',
+        resultOffset: 1,
+      }),
+    );
+    expectParity(result);
+    expect(result.structuredContent).toMatchObject({
+      unfilteredCount: 2,
+      filteredCount: 2,
+      distributions: [{ sourceAphiaId: 2, locality: 'B' }],
+      echo: { recordStatus: 'valid' },
+    });
+    expect(network.calls).toHaveLength(4);
+  });
   const rows = (id: number, count: number) =>
     Array.from({ length: count }, (_, i) => ({
       locality: `${id}:${i}:${'x'.repeat(300)}`,

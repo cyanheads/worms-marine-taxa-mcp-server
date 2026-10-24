@@ -10,6 +10,30 @@ export const aphiaIdSchema = z
   .positive()
   .max(Number.MAX_SAFE_INTEGER)
   .describe('Positive safe-integer AphiaID; obtain from worms_resolve_taxon.');
+const lsidPrefix = 'urn:lsid:marinespecies.org:taxname:';
+/** Convert a validated numeric or canonical WoRMS identifier to its numeric selector. */
+export function normalizeAphiaId(value: number | string): number {
+  return typeof value === 'number'
+    ? value
+    : Number(value.startsWith(lsidPrefix) ? value.slice(lsidPrefix.length) : value);
+}
+/** Numeric output schemas stay separate from the advertised textual input forms. */
+export const aphiaIdInputSchema = z
+  .union([
+    aphiaIdSchema,
+    z
+      .string()
+      .trim()
+      .describe('Decimal AphiaID or canonical urn:lsid:marinespecies.org:taxname:<AphiaID>.'),
+  ])
+  .refine((value) => {
+    if (typeof value === 'number') return true;
+    const suffix = value.startsWith(lsidPrefix) ? value.slice(lsidPrefix.length) : value;
+    return /^[0-9]{1,16}$/.test(suffix) && aphiaIdSchema.safeParse(normalizeAphiaId(value)).success;
+  }, 'Supply a positive safe-integer AphiaID or canonical WoRMS LSID. For other identifiers call worms_crosswalk_id with externalId and type: "lsid", or worms_resolve_taxon with a scientific name.')
+  .describe(
+    'Positive safe-integer AphiaID, decimal string, or canonical urn:lsid:marinespecies.org:taxname:<AphiaID>; outputs remain numeric.',
+  );
 export const offsetSchema = z
   .number()
   .int()
@@ -203,9 +227,8 @@ export const statusErrorSchema = itemErrorSchema
     'Failed taxonomic-status read; evidence is unaffected, but whether the AphiaID is its accepted name is unknown.',
   );
 /**
- * Notice fragment for a submitted AphiaID that is not its own accepted name: both numeric IDs and
- * the caller's retry, or a worms_get_taxon check when no accepted taxon is linked. Accepted,
- * self-valid, and missing records yield none; upstream names and statuses never enter the text.
+ * Notice for a linked preferred/accepted ID, or an absent accepted link. Alternative representations
+ * remain accepted. Self-valid and missing records yield none; upstream prose never enters the text.
  */
 export function statusNotice(
   id: number,
@@ -217,7 +240,9 @@ export function statusNotice(
   if (valid !== null && valid !== undefined)
     return valid === id
       ? undefined
-      : `AphiaID ${id} is not the accepted name; WoRMS links it to accepted AphiaID ${valid}. ${retry(valid)}`;
+      : record.status === 'alternative representation'
+        ? `AphiaID ${id} is an accepted alternative representation; WoRMS links it to preferred AphiaID ${valid}. ${retry(valid)}`
+        : `AphiaID ${id} is not the accepted name; WoRMS links it to accepted AphiaID ${valid}. ${retry(valid)}`;
   return record.status === 'accepted'
     ? undefined
     : `WoRMS links no accepted taxon to AphiaID ${id}; call worms_get_taxon with aphiaIds: [${id}] to inspect its status.`;

@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
@@ -15,6 +16,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  normalizeAphiaId,
   optionalEvidenceTextSchema,
   statusErrorSchema,
   statusNotice,
@@ -47,11 +49,11 @@ function selectType(tree: Trait[], type: string, scope: WormsScope): Trait[] {
 
 export const getTraitsTool = tool('worms_get_traits', {
   description:
-    'Retrieve recorded attributes for an AphiaID from worms_resolve_taxon, including inherited attributes by default. Resume nextResultOffset as resultOffset with unchanged selectors and options. Whole rows retain original preorder nodeIndex and parentIndex across pages; parents may be on earlier pages. measurementType keeps each matching node with its subtree and ancestors, indices unchanged; totalCount counts that set and unfilteredCount the whole tree. Values, references and inheritance markers remain unchanged; on an accepted taxon WoRMS also returns attributes recorded on its synonyms whatever includeInherited is set to, marked by inheritedFrom. A notice flags an AphiaID that is not the accepted name. Missing traits do not prove biological absence; IUCN list membership is not a threat category.',
+    'Retrieve recorded attributes for an AphiaID or canonical WoRMS LSID, including inherited attributes by default. Resume nextResultOffset as resultOffset with unchanged selectors and options. Whole rows retain original preorder nodeIndex and parentIndex across pages; parents may be on earlier pages. measurementType keeps each matching node with its subtree and ancestors, indices unchanged; totalCount counts that set and unfilteredCount the whole tree. Values, references and inheritance markers remain unchanged; on an accepted taxon WoRMS also returns attributes recorded on its synonyms whatever includeInherited is set to, marked by inheritedFrom. A notice names the linked accepted ID, distinguishing an accepted alternative representation from its preferred ID. Missing traits do not prove biological absence; IUCN list membership is not a threat category.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     resultOffset: localOffsetSchema,
-    aphiaId: aphiaIdSchema,
+    aphiaId: aphiaIdInputSchema,
     includeInherited: z
       .boolean()
       .default(true)
@@ -86,7 +88,7 @@ export const getTraitsTool = tool('worms_get_traits', {
     notice: z
       .string()
       .optional()
-      .describe('Unaccepted-AphiaID and absent-attribute guidance, in that order.'),
+      .describe('Linked accepted/preferred-AphiaID and absent-attribute guidance, in that order.'),
   },
   enrichmentTrailer: codecTrailer('echo', 'notice'),
   errors: [
@@ -150,7 +152,8 @@ export const getTraitsTool = tool('worms_get_traits', {
       thrownBy: 'service',
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = { ...raw, aphiaId: normalizeAphiaId(raw.aphiaId) };
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     const { record, statusError } = await service.status(input.aphiaId, scope);

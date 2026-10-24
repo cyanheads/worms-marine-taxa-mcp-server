@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
@@ -15,6 +16,8 @@ import {
   getWormsService,
   itemErrorSchema,
   localOffsetSchema,
+  normalizeAphiaId,
+  optionalEvidenceTextSchema,
   sourceSchema,
   taxonRecordSchema,
   vernacularSchema,
@@ -37,12 +40,28 @@ const resultSchema = z
       .optional()
       .describe('Sources in upstream order, only when requested and successfully retrieved.'),
     sourcesError: itemErrorSchema.optional().describe('Optional source retrieval failure.'),
+    sourceTotalCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        'Complete selected source count, before sourceOffset and the byte budget; only after a successful source read.',
+      ),
+    unfilteredSourceCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        'Complete source count before an effective sourceUse filter; only after a successful filtered source read.',
+      ),
     guidance: z.string().nullable().describe('Next step for absent records.'),
   })
   .describe('Positional taxon retrieval result.');
 export const getTaxonTool = tool('worms_get_taxon', {
   description:
-    'Retrieve full Aphia records by IDs from worms_resolve_taxon in byte-budgeted segments. Resume nextInputOffset as inputOffset using unchanged aphiaIds and options; inputIndex preserves duplicate and missing positions. includeVernaculars (common names) or includeSources (original description, basis of record, and other sources) requires one submitted ID, one of the two per call; resume nextVernacularOffset as vernacularOffset or nextSourceOffset as sourceOffset, repeating the full primary record. Optional failure retains that record; unknown facts remain omitted or null.',
+    'Retrieve full Aphia records by numeric IDs or canonical WoRMS LSIDs in byte-budgeted segments. Resume nextInputOffset as inputOffset using unchanged aphiaIds and options; inputIndex preserves duplicate and missing positions. includeVernaculars (common names) or includeSources (original description, basis of record, and other sources) requires one submitted ID, one of the two per call; resume nextVernacularOffset as vernacularOffset or nextSourceOffset as sourceOffset, repeating the full primary record. sourceUse filters whole use values ignoring case before sourceOffset; populated values are not trimmed. Successful source results report sourceTotalCount before slicing and unfilteredSourceCount only with an effective filter. Optional failure retains the record without source counts; unknown facts remain omitted or null.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     inputOffset: localOffsetSchema,
@@ -50,14 +69,16 @@ export const getTaxonTool = tool('worms_get_taxon', {
       'Zero-based common-name position for the singleton ID; repeat unchanged options. Inactive without includeVernaculars.',
     ),
     sourceOffset: localOffsetSchema.describe(
-      'Zero-based source position for the singleton ID; repeat unchanged options. Inactive without includeSources.',
+      'Zero-based position in the sourceUse-selected list for the singleton ID; repeat unchanged options. Inactive without includeSources.',
+    ),
+    sourceUse: optionalEvidenceTextSchema.describe(
+      'Case-insensitive whole-value source use, such as original description; populated values are not trimmed, blanks omitted. Filters before sourceOffset; inactive without includeSources.',
     ),
     aphiaIds: z
-      .array(aphiaIdSchema)
+      .array(aphiaIdInputSchema)
       .min(1)
-      .max(500)
       .describe(
-        'Original AphiaIDs in order; resubmit unchanged with inputOffset, without deduplicating.',
+        'Nonempty original AphiaID list, with no total-input ceiling; at most 50 positions fetched per call. Resubmit unchanged with inputOffset, without deduplicating.',
       ),
     includeVernaculars: z
       .boolean()
@@ -101,6 +122,12 @@ export const getTaxonTool = tool('worms_get_taxon', {
       .object({
         includeVernaculars: z.boolean().describe('Effective common-name enrichment option.'),
         includeSources: z.boolean().describe('Effective source enrichment option.'),
+        sourceUse: z
+          .string()
+          .optional()
+          .describe(
+            'Effective source-use filter with its original value; only with includeSources.',
+          ),
       })
       .describe('Effective options.'),
   },
@@ -186,7 +213,8 @@ export const getTaxonTool = tool('worms_get_taxon', {
         'Call worms_get_taxon once with includeVernaculars: true and once with includeSources: true.',
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = { ...raw, aphiaIds: raw.aphiaIds.map(normalizeAphiaId) };
     if (input.includeVernaculars && input.includeSources) throw ctx.fail('enrichment_conflict');
     if (input.includeVernaculars && input.aphiaIds.length !== 1) throw ctx.fail('vernacular_batch');
     if (input.includeSources && input.aphiaIds.length !== 1) throw ctx.fail('sources_batch');
@@ -214,12 +242,38 @@ export const getTaxonTool = tool('worms_get_taxon', {
     if (input.includeSources && first?.found) {
       try {
         first.sources = await service.sources(first.requestedAphiaId, scope);
+        if (input.sourceUse !== undefined) {
+          first.unfilteredSourceCount = first.sources.length;
+          const wanted = input.sourceUse.toLowerCase();
+          first.sources = first.sources.filter((source, index) => {
+            if (!(index % 256)) scope.check();
+            return typeof source.use === 'string' && source.use.toLowerCase() === wanted;
+          });
+        }
+        first.sourceTotalCount = first.sources.length;
       } catch (error) {
         first.sourcesError = scope.optionalError(error);
       }
     }
+    const notice =
+      first?.sources === undefined
+        ? undefined
+        : first.sources.length === 0
+          ? first.unfilteredSourceCount !== undefined && first.unfilteredSourceCount > 0
+            ? 'No sources matched sourceUse; call worms_get_taxon with includeSources: true and remove or change sourceUse to inspect the bibliography.'
+            : 'No sources were returned for this AphiaID; inspect the returned taxon record for its citation and accepted-name link.'
+          : input.sourceOffset >= first.sources.length
+            ? 'sourceOffset is past the selected sources; call worms_get_taxon with sourceOffset: 0 and unchanged sourceUse and includeSources to inspect the first segment.'
+            : undefined;
     const enrichment = {
-      echo: { includeVernaculars: input.includeVernaculars, includeSources: input.includeSources },
+      echo: {
+        includeVernaculars: input.includeVernaculars,
+        includeSources: input.includeSources,
+        ...(input.includeSources && input.sourceUse !== undefined
+          ? { sourceUse: input.sourceUse }
+          : {}),
+      },
+      ...(notice ? { notice } : {}),
     };
     ctx.enrich(enrichment);
     scope.check();

@@ -5,6 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
+  aphiaIdInputSchema,
   aphiaIdSchema,
   attribution,
   attributionSchema,
@@ -19,6 +20,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  normalizeAphiaId,
   optionalEvidenceTextSchema,
   taxonRecordSchema,
   WormsScope,
@@ -73,9 +75,11 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     resultOffset: localOffsetSchema.describe(
       'Zero-based forward identifier position across types in requested order; repeat unchanged selectors. Inactive for reverse lookup.',
     ),
-    aphiaId: aphiaIdSchema
+    aphiaId: aphiaIdInputSchema
       .optional()
-      .describe('Forward selector; mutually exclusive with externalId.'),
+      .describe(
+        'Forward numeric AphiaID, decimal string, or canonical WoRMS LSID; mutually exclusive with externalId.',
+      ),
     externalId: optionalEvidenceTextSchema.describe(
       'Reverse selector; opaque identifier up to 512 characters; blank omitted.',
     ),
@@ -182,7 +186,11 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       retryable: false,
     },
   ],
-  async handler(input, ctx) {
+  async handler(raw, ctx) {
+    const input = {
+      ...raw,
+      aphiaId: raw.aphiaId === undefined ? undefined : normalizeAphiaId(raw.aphiaId),
+    };
     using scope = new WormsScope(ctx);
     if ((input.aphiaId !== undefined) === (input.externalId !== undefined))
       throw ctx.fail('invalid_selector', 'Supply exactly one of aphiaId or externalId.');
