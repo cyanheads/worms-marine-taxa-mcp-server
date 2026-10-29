@@ -1,0 +1,33 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "worms-marine-taxa-mcp-server",
+  "version": "0.1.3",
+  "description": "Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/worms-marine-taxa-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/worms-marine-taxa-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-agents",
+    "ai-tools",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "cyanheads",
+    "worms",
+    "world-register-of-marine-species",
+    "marine-biology",
+    "marine-species",
+    "taxonomy",
+    "aphia",
+    "biodiversity"
+  ]
+}
