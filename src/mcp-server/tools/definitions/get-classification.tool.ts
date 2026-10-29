@@ -57,7 +57,7 @@ export const getClassificationTool = tool('worms_get_classification', {
     marineOnly: z
       .boolean()
       .default(true)
-      .describe('Marine children only; inactive without includeChildren.'),
+      .describe('Marine or brackish children only; inactive without includeChildren.'),
     extantOnly: z
       .boolean()
       .default(true)

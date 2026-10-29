@@ -28,7 +28,7 @@ import {
 
 export const resolveTaxonTool = tool('worms_resolve_taxon', {
   description:
-    'Resolve exact or explicitly fuzzy scientific names, or search one vernacular name as a whole recorded common name or, with vernacularMatch: "contains", as part of one. Names default to marine and extant taxa; vernacular cannot filter. Resume scientific segments with nextInputOffset and nextMatchOffset against unchanged names and options; inputIndex preserves duplicates and partialGroup identifies split groups. For vernacular, consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Full 50-match upstream groups remain completeness-unknown; accepted-name fields do not choose an ambiguous match.',
+    'Resolve exact or explicitly fuzzy scientific names, or search one vernacular name as a whole recorded common name or, with vernacularMatch: "contains", as part of one. Names default to marine-or-brackish and extant taxa; vernacular cannot filter. Resume scientific segments with nextInputOffset and nextMatchOffset against unchanged names and options; inputIndex preserves duplicates and partialGroup identifies split groups. For vernacular, consume nextResultOffset within the same upstream offset before advancing page.nextOffset and resetting resultOffset to zero. Full 50-match upstream groups remain completeness-unknown; accepted-name fields do not choose an ambiguous match.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     inputOffset: localOffsetSchema.describe(
@@ -63,7 +63,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       .boolean()
       .default(true)
       .describe(
-        'Filter scientific names to marine taxa; vernacular cannot filter and rejects false.',
+        'Filter scientific names to taxa WoRMS flags marine or brackish; false also admits freshwater-only and terrestrial taxa. Vernacular cannot filter and rejects false.',
       ),
     extantOnly: z
       .boolean()

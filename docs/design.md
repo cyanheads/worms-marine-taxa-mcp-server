@@ -13,7 +13,7 @@
 | `worms_crosswalk_id` | Translate between AphiaIDs and nine external identifier systems. |
 | `worms_list_reference` | List identifier systems, taxonomic statuses, habitat-flag semantics, distribution filter values, ranks, or trait definitions. |
 
-All tools: `readOnlyHint: true`, `idempotentHint: true`; omit `destructiveHint`. Set `openWorldHint: true` on every tool, `worms_list_reference` included: four of its topics are static, but the tool's single definition also serves the live ones. No resources, prompts, Apps, SQL workspace, mirror, native helper, harvesting, or user-data writes. Tools alone cover every workflow.
+All tools: `readOnlyHint: true`, `idempotentHint: true`; omit `destructiveHint`. Set `openWorldHint: true` on every tool, `worms_list_reference` included: four of its topics are static, but the tool's single definition also serves the live ones. No prompts, Apps, SQL workspace, mirror, native helper, harvesting, or user-data writes. The only resources are the published agent skill in root `skills/`, served as `skill://` resources through `createApp({ skills: 'skills' })`; tools alone cover every workflow.
 
 ## Overview and requirements
 
