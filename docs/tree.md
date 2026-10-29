@@ -1,6 +1,6 @@
 # worms-marine-taxa-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 03:55:17
+Generated on: 2026-10-29 02:47:20
 
 ```text
 worms-marine-taxa-mcp-server/
@@ -25,6 +25,7 @@ worms-marine-taxa-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -36,6 +37,8 @@ worms-marine-taxa-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -133,6 +136,9 @@ worms-marine-taxa-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── worms-marine-taxa-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -167,6 +173,8 @@ worms-marine-taxa-mcp-server/
 │   │   └── worms-stdio.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   ├── format.test.ts
 │   │   └── transport.test.ts
@@ -192,7 +200,9 @@ worms-marine-taxa-mcp-server/
 ├── knip.jsonc
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

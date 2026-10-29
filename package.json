@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/worms-marine-taxa-mcp-server",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "mcpName": "io.github.cyanheads/worms-marine-taxa-mcp-server",
   "description": "Resolve WoRMS marine species names; fetch classifications, synonyms, distributions, traits, and IDs via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
