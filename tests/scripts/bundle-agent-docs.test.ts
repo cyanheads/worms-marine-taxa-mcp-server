@@ -5,19 +5,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AGENT_DOC_ENTRY, filterAgentDocEntries } from '../../scripts/clean-mcpb.js';
-
-type LintPackaging = {
-  AGENT_DOC_ENTRY: RegExp;
-  checkBundleEntries: (entries: string[], bundleLabel: string) => string[];
-};
-
-/**
- * Loaded through a computed URL so `tsc` never pulls the script into the program:
- * the framework's copy carries a repo-only `../src/` import that fails typechecking
- * in a server, and a script resync restores it.
- */
-const lintPackagingUrl = new URL('../../scripts/lint-packaging.ts', import.meta.url).href;
-const lintPackaging: LintPackaging = await import(lintPackagingUrl);
+import {
+  checkBundleEntries,
+  AGENT_DOC_ENTRY as PACKAGING_AGENT_DOC_ENTRY,
+} from '../../scripts/lint-packaging.js';
 
 /** Runtime modules the MCP SDK loads at startup, plus scoped and nested copies of the same shape. */
 const RUNTIME = [
@@ -29,6 +20,7 @@ const RUNTIME = [
   'node_modules/some-pkg/node_modules/@modelcontextprotocol/core/dist/ext/skills/index.mjs',
   'node_modules/some-pkg/lib/skills/loader.js',
   'node_modules/some-pkg/dist/.claude/defaults.js',
+  'node_modules/@scope/skills/runtime.js',
 ];
 
 /** Agent docs a dependency ships at its package root, scoped and nested, plus stray SKILL.md files. */
@@ -43,6 +35,8 @@ const AGENT_DOCS = [
   'node_modules/@outer/pkg/node_modules/inner/.claude/commands/run.md',
   'node_modules/a/node_modules/b/node_modules/c/framework-skills/x/SKILL.md',
   'node_modules/some-pkg/docs/SKILL.md',
+  'node_modules/some-pkg/AGENTS.md',
+  'node_modules/outer/node_modules/@scope/inner/CLAUDE.md',
 ];
 
 describe('bundle agent-doc matcher', () => {
@@ -60,18 +54,16 @@ describe('bundle agent-doc matcher', () => {
   });
 
   it('uses one matcher in the cleaner and the packaging check', () => {
-    expect(lintPackaging.AGENT_DOC_ENTRY.source).toBe(AGENT_DOC_ENTRY.source);
-    expect(lintPackaging.AGENT_DOC_ENTRY.flags).toBe(AGENT_DOC_ENTRY.flags);
+    expect(PACKAGING_AGENT_DOC_ENTRY.source).toBe(AGENT_DOC_ENTRY.source);
+    expect(PACKAGING_AGENT_DOC_ENTRY.flags).toBe(AGENT_DOC_ENTRY.flags);
   });
 
   it('passes a cleaned bundle that keeps the runtime modules', () => {
-    expect(lintPackaging.checkBundleEntries([...RUNTIME, 'dist/index.js'], 'bundle')).toStrictEqual(
-      [],
-    );
+    expect(checkBundleEntries([...RUNTIME, 'dist/index.js'], 'bundle')).toStrictEqual([]);
   });
 
   it('reports a bundle that still holds agent docs', () => {
-    const errors = lintPackaging.checkBundleEntries([...RUNTIME, ...AGENT_DOCS], 'bundle');
+    const errors = checkBundleEntries([...RUNTIME, ...AGENT_DOCS], 'bundle');
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain(`contains ${AGENT_DOCS.length} node_modules agent-doc entries`);
   });

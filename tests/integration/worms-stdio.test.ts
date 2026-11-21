@@ -4,6 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import type { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { expect, it } from 'vitest';
 import { expectParity } from '../helpers/worms.js';
@@ -11,7 +12,11 @@ import { expectParity } from '../helpers/worms.js';
 it('initializes, lists eight tools, and round-trips real evidence over JSON-RPC', async () => {
   const child = spawn(
     'bun',
-    ['--preload', './tests/helpers/evidence-stdio-upstream.ts', './src/index.ts'],
+    [
+      '--preload',
+      fileURLToPath(new URL('../helpers/evidence-stdio-upstream.ts', import.meta.url)),
+      fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
+    ],
     {
       cwd: new URL('../../', import.meta.url),
       env: {
@@ -106,6 +111,7 @@ it('initializes, lists eight tools, and round-trips real evidence over JSON-RPC'
     expectParity(result);
     expect(result.structuredContent).toMatchObject({
       aphiaId: 1,
+      found: true,
       traits: [
         { nodeIndex: 0, measurementTypeId: '001', measurementValue: 'A\r\n\n`|<>' },
         { nodeIndex: 1, parentIndex: 0, depth: 1, sourceId: '002' },
