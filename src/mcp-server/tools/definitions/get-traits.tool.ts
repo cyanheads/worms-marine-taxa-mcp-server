@@ -16,6 +16,7 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  missingTaxonNotice,
   normalizeAphiaId,
   optionalEvidenceTextSchema,
   statusErrorSchema,
@@ -65,6 +66,10 @@ export const getTraitsTool = tool('worms_get_traits', {
   output: z.object({
     ...localPageFields,
     aphiaId: aphiaIdSchema,
+    found: z
+      .boolean()
+      .nullable()
+      .describe('Whether WoRMS has the submitted taxon record; null when the status read failed.'),
     unfilteredCount: z
       .number()
       .int()
@@ -157,26 +162,29 @@ export const getTraitsTool = tool('worms_get_traits', {
     using scope = new WormsScope(ctx);
     const service = getWormsService();
     const { record, statusError } = await service.status(input.aphiaId, scope);
-    const tree = await service.traits(input.aphiaId, input.includeInherited, scope);
+    const found = statusError ? null : record !== null;
+    const tree =
+      found === false ? [] : await service.traits(input.aphiaId, input.includeInherited, scope);
     const traits =
       input.measurementType === undefined ? tree : selectType(tree, input.measurementType, scope);
-    const notice = [
-      statusNotice(
-        input.aphiaId,
-        record,
-        (valid) =>
-          `Call worms_get_traits with aphiaId: ${valid} for the accepted taxon's attributes.`,
-      ),
-      tree.length === 0
-        ? input.includeInherited
-          ? 'No attributes were returned with inheritance enabled; call worms_list_reference with topic: trait_types to inspect definitions.'
-          : 'Call worms_get_traits with includeInherited: true to include higher-rank attributes; call worms_list_reference with topic: trait_types to inspect definitions.'
-        : traits.length === 0
-          ? 'No attribute matched measurementType; call worms_get_traits without measurementType to list every recorded attribute, or worms_list_reference with topic: trait_types to inspect type names.'
-          : undefined,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    const statusFragment = statusNotice(
+      input.aphiaId,
+      record,
+      (valid) =>
+        `Call worms_get_traits with aphiaId: ${valid} for the accepted taxon's attributes.`,
+    );
+    let emptyNotice: string | undefined;
+    if (found === false) {
+      emptyNotice = missingTaxonNotice(input.aphiaId);
+    } else if (tree.length === 0) {
+      emptyNotice = input.includeInherited
+        ? 'No attributes were returned with inheritance enabled; call worms_list_reference with topic: trait_types to inspect definitions.'
+        : 'Call worms_get_traits with includeInherited: true to include higher-rank attributes; call worms_list_reference with topic: trait_types to inspect definitions.';
+    } else if (traits.length === 0) {
+      emptyNotice =
+        'No attribute matched measurementType; call worms_get_traits without measurementType to list every recorded attribute, or worms_list_reference with topic: trait_types to inspect type names.';
+    }
+    const notice = [statusFragment, emptyNotice].filter(Boolean).join(' ');
     const enrichment = {
       echo: {
         includeInherited: input.includeInherited,
@@ -191,6 +199,7 @@ export const getTraitsTool = tool('worms_get_traits', {
       input.resultOffset,
       (segment, pagination) => ({
         aphiaId: input.aphiaId,
+        found,
         unfilteredCount: tree.length,
         traits: segment,
         ...(statusError ? { statusError } : {}),

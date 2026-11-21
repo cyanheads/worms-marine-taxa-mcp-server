@@ -27,11 +27,13 @@ WoRMS is the register of marine species names, keyless. It also holds brackish, 
 
 ## Gates
 
-**Never pick `matches[0]`.** One name can return several accepted matches, such as homonym genera in different kingdoms: with both filters off, `Morus` returns the gannet genus and the mulberry genus. Matches carry authority and rank but no kingdom. Pass every candidate `aphiaId` to one `worms_get_taxon` call and decide on kingdom, phylum, and authority, or ask the user.
+**Never pick `matches[0]`.** One name can return several accepted matches. With both filters off, `Morus` returns the gannet genus (Animalia) and the mulberry genus (Plantae). Use kingdom, authority, and rank where supplied. If those fields leave ambiguity, pass the remaining candidate AphiaIDs to `worms_get_taxon` for more taxonomic detail or ask the user.
 
 **Accepted means `validAphiaId` equals `aphiaId`.** An `alternative representation` is accepted yet links to its preferred form; use the preferred one. Do not test `status === "unaccepted"`: WoRMS also writes the specific reason as the status itself (`superseded combination`, `junior subjective synonym`). When `validAphiaId` is null, report the name with its status rather than substituting a guess; `worms_list_reference` with topic `statuses` groups the values.
 
 **A fuzzy match is a proposed correction.** Fuzzy results report how each name matched in `matchType` (`phonetic` and `near_1`, for example). Show the user the submitted and matched spellings before rewriting a name, and run fuzzy matching only over the names the exact pass missed.
+
+**Use strict authorship for a fully authored name.** With `names` and `fuzzy: true`, set `matchAuthority: true` when the submitted authorship should distinguish homonyms. Incomplete authorship can miss. If the call misses, retry with `matchAuthority: false` and compare the candidates' authorities. Omit `matchAuthority` in exact and vernacular searches.
 
 **A miss under the defaults is not "not in WoRMS".** The marine and extant defaults hide freshwater-only, terrestrial, and extinct taxa: `Danio rerio`, `Homo sapiens`, and `Trilobita` all miss under them; `Danio rerio` resolves with `marineOnly: false`, `Homo sapiens` resolves with both filters off and `Trilobita` with `extantOnly: false`. Retry with both off before reporting a name absent.
 
@@ -39,7 +41,9 @@ WoRMS is the register of marine species names, keyless. It also holds brackish, 
 
 **Common names map to several taxa.** Vernacular hits include unaccepted names: `lionfish` with `contains` returns a superseded combination beside *Pterois volitans*, and `Atlantic cod` with `contains` returns a junior subjective synonym beside *Gadus morhua*. Start with exact matching. Collect the hits' `validAphiaId` values, deduplicate them, and ask the user when more than one accepted taxon remains.
 
-**A negative range answer needs every synonym window.** Records attach to individual name usages, and an alien record can sit on a synonym: *Amphibalanus improvisus* returns more `Alien` rows with `includeSynonyms` than on its own AphiaID. Before saying a taxon has no alien or invasive record somewhere, walk `includeSynonyms` from `synonymOffset` 0 until `synonymUnion.nextSynonymOffset` is null, then report "no record in WoRMS", never "not present".
+**Check `found` before interpreting empty evidence.** In traits and distributions, `found: false` means WoRMS confirmed the AphiaID is missing. Resolve the name again. With `found: null`, report the status error alongside any evidence returned. With `found: true`, report what WoRMS records for that taxon.
+
+**A negative range answer needs every synonym window.** Records attach to individual name usages, and an alien record can sit on a synonym: *Amphibalanus improvisus* returns more `Alien` rows with `includeSynonyms` than on its own AphiaID. Before reporting "no record in WoRMS", consume all local segments and synonym windows and account for any failed synonym reads.
 
 **Status filters drop unlabeled rows.** `establishmentMeans`, `invasiveness`, and `occurrence` are often null; many *Carcinus maenas* rows carry none. A filter never matches null and matches whole values only: `Ali` matches nothing where `Alien` matches. A row without `Alien` is not thereby native. For native-range or presence questions, read the rows unfiltered.
 
@@ -55,4 +59,4 @@ WoRMS is the register of marine species names, keyless. It also holds brackish, 
 
 **Original description.** Start with the record's `authority`: in a zoological name, an author and year in parentheses mean the species was described in another genus. Call `worms_get_taxon` with `includeSources: true` and `sourceUse: "original description"` on the accepted AphiaID. When nothing matches and `originalAphiaId` differs from it, repeat the call on `originalAphiaId`. For *Amphibalanus improvisus* the description sits only on the original combination, *Balanus improvisus*.
 
-**Reconcile identifiers.** Request one `type` when one system is needed: omitting `type` makes nine paced upstream lookups and takes several seconds. Keep every ID a type returns. A reverse lookup returns a full record; apply the accepted-name gate to it as to any match.
+**Reconcile identifiers.** Request one `type` when one system is needed. On a confirmed AphiaID, omitting it makes nine paced identifier lookups after the record check. Keep every identifier the submitted name usage returns and follow any accepted or preferred AphiaID notice with the same type. For a confirmed taxon, `typeTotals` of zero means the search answered with no IDs for that type. Call `worms_get_synonyms`, then retry that type on the synonym AphiaIDs. An empty array on a segment with a positive total calls for continuation. Retry a failed type by itself. For `found: false`, resolve the name to find an AphiaID. For `found: null`, report the status error and any IDs returned. A reverse hit returns a full record. Apply the accepted-name gate to it.

@@ -111,10 +111,12 @@ describe('reference vocabulary', () => {
   )(
     '$name throws $reason with its own declared recovery on both error surfaces',
     async ({ tool, run, reason, status }) => {
-      fakeFetch(() =>
-        reason === 'response_too_large'
-          ? new Response(new Uint8Array(8 * 1024 * 1024 + 1))
-          : new Response('private upstream content', { status }),
+      fakeFetch((url) =>
+        tool === crosswalkIdTool && url.pathname === '/rest/AphiaRecordByAphiaID/1'
+          ? Response.json(record(1))
+          : reason === 'response_too_large'
+            ? new Response(new Uint8Array(8 * 1024 * 1024 + 1))
+            : new Response('private upstream content', { status }),
       );
       const entry = declared(tool, reason);
       const result = await settle(run());
@@ -337,6 +339,119 @@ describe('reference vocabulary', () => {
 });
 
 describe('taxon resolution', () => {
+  it.each(['exact', 'fuzzy', 'vernacular'] as const)(
+    'preserves kingdom in %s matches',
+    async (mode) => {
+      const matches = [
+        record(148775, { kingdom: 'Animalia' }),
+        record(1492204, { kingdom: 'Plantae' }),
+        record(1, { kingdom: null }),
+        record(2),
+      ];
+      const network = fakeFetch(() => Response.json(mode === 'vernacular' ? matches : [matches]));
+      const input =
+        mode === 'vernacular'
+          ? { vernacular: 'Morus' }
+          : { names: ['Morus'], fuzzy: mode === 'fuzzy', marineOnly: false, extantOnly: false };
+      const result = await settle(runToolContract(resolveTaxonTool, input));
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({ mode });
+      expect(result.structuredContent).toHaveProperty('results', [
+        expect.objectContaining({
+          matches: [
+            { aphiaId: 148775, kingdom: 'Animalia' },
+            { aphiaId: 1492204, kingdom: 'Plantae' },
+            { aphiaId: 1, kingdom: null },
+            { aphiaId: 2 },
+          ],
+        }),
+      ]);
+      expect(network.calls).toHaveLength(1);
+      expect(result.structuredContent).toHaveProperty(
+        'echo',
+        mode === 'fuzzy'
+          ? { marineOnly: false, extantOnly: false, fuzzy: true, matchAuthority: false }
+          : mode === 'exact'
+            ? { marineOnly: false, extantOnly: false, fuzzy: false }
+            : {
+                marineOnly: null,
+                extantOnly: null,
+                fuzzy: false,
+                offset: 1,
+                vernacularMatch: 'exact',
+              },
+      );
+    },
+  );
+  it.each([true, false])(
+    'sends match_authority=%s and keeps mixed fuzzy positions',
+    async (matchAuthority) => {
+      const names = ['Gadus albidus Gmelin, 1789', 'Miss', 'Gadus albidus Gmelin, 1789'];
+      const network = fakeFetch((url) => {
+        expect(url.pathname).toBe('/rest/AphiaRecordsByMatchNames');
+        expect(url.searchParams.get('match_authority')).toBe(String(matchAuthority));
+        expect(url.searchParams.getAll('scientificnames[]')).toEqual(names);
+        return Response.json([[record(300722)], [], [record(300722)]]);
+      });
+      const result = await settle(
+        runToolContract(resolveTaxonTool, { names, fuzzy: true, matchAuthority }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        echo: { matchAuthority },
+        results: [
+          { inputIndex: 0, matches: [{ aphiaId: 300722 }], guidance: null },
+          { inputIndex: 1, matches: [], guidance: expect.stringContaining('extantOnly: false') },
+          { inputIndex: 2, matches: [{ aphiaId: 300722 }], guidance: null },
+        ],
+      });
+      const guidance = resolveTaxonTool.output.parse(result.structuredContent).results[1]?.guidance;
+      expect(guidance?.includes('matchAuthority: false')).toBe(matchAuthority);
+      expect(guidance).toContain('marineOnly: false');
+      expect(network.calls).toHaveLength(1);
+    },
+  );
+  it.each(
+    [true, false].flatMap((matchAuthority) => [
+      { names: ['Morus'], matchAuthority },
+      { vernacular: 'Morus', matchAuthority },
+    ]),
+  )('rejects non-fuzzy authority option %j', async (input) => {
+    offline();
+    const result = await settle(runToolContract(resolveTaxonTool, input));
+    const hint = declared(resolveTaxonTool, 'unsupported_mode_options').recovery;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'unsupported_mode_options', recovery: { hint } } },
+    });
+    expect(hint).toContain('matchAuthority');
+    expect(contentText(result)).toContain(hint);
+  });
+  it('normalizes a strict HTTP 204 and rejects an invalid authority option', async () => {
+    const network = fakeFetch((url) => {
+      expect(url.searchParams.get('match_authority')).toBe('true');
+      return new Response(null, { status: 204 });
+    });
+    const args = { names: ['Gadus morhua Smith, 1900'], fuzzy: true };
+    const result = await settle(
+      runToolContract(resolveTaxonTool, { ...args, matchAuthority: true }),
+    );
+    expectParity(result);
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        { inputIndex: 0, matches: [], guidance: expect.stringContaining('matchAuthority: false') },
+      ],
+    });
+    const invalid = await settle(
+      runToolContract(resolveTaxonTool, { ...args, matchAuthority: 'strict' as never }),
+    );
+    expect(invalid.isError).toBe(true);
+    expect(invalid.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_arguments' } },
+    });
+    expect(contentText(invalid)).toContain('matchAuthority');
+    expect(network.calls).toHaveLength(1);
+  });
   it('accepts 500 names and preserves all 450 deferred positions', async () => {
     const names = Array.from({ length: 500 }, (_, index) => `Taxon ${index % 67}`);
     const network = fakeFetch((url) => {
@@ -563,6 +678,23 @@ describe('taxon resolution', () => {
       );
     },
   );
+  it('names the fuzzy options to omit when retrying an oversized strict match as exact', async () => {
+    fakeFetch(() => new Response(new Uint8Array(8 * 1024 * 1024 + 1)));
+    const result = await settle(
+      runToolContract(resolveTaxonTool, {
+        names: ['Morus'],
+        fuzzy: true,
+        matchAuthority: true,
+      }),
+    );
+    const hint = 'For an exact scientific-name retry, omit fuzzy and matchAuthority.';
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: { reason: 'response_too_large', recovery: { hint: expect.stringContaining(hint) } },
+      },
+    });
+    expect(contentText(result)).toContain(hint);
+  });
   it.each([{}, { vernacularMatch: ' ' as 'exact' }])(
     'sends an explicit exact vernacular search for %j and keeps its results',
     async (option) => {
@@ -669,6 +801,22 @@ const sourceRows = [
 ];
 
 describe('taxon retrieval', () => {
+  it('waits for an unpaged bibliography past the normal request timeout', async () => {
+    const network = fakeFetch(async (url) => {
+      if (url.pathname === '/rest/AphiaRecordsByAphiaIDs') return Response.json([record(1)]);
+      expect(url.pathname).toBe('/rest/AphiaSourcesByAphiaID/1');
+      await new Promise((resolve) => setTimeout(resolve, 11_000));
+      return Response.json([{ source_id: 81 }]);
+    });
+    const result = await settle(
+      runToolContract(getTaxonTool, { aphiaIds: [1], includeSources: true }),
+    );
+    expectParity(result);
+    expect(result.structuredContent).toMatchObject({
+      results: [{ found: true, sources: [{ sourceId: 81 }], sourceTotalCount: 1 }],
+    });
+    expect(network.calls).toHaveLength(2);
+  });
   it.each(['missing', 'failure'])(
     'omits filtered source counts after a %s primary/source read',
     async (mode) => {
@@ -895,7 +1043,7 @@ describe('taxon retrieval', () => {
       expect(network.calls.map((url) => url.pathname)).toEqual([
         '/rest/AphiaRecordsByAphiaIDs',
         path,
-        path,
+        ...(option === 'includeVernaculars' ? [path] : []),
       ]);
     },
   );
@@ -1137,7 +1285,7 @@ describe('taxon retrieval', () => {
         next,
         status,
         reason,
-        calls,
+        calls: option === 'includeSources' && status === 500 ? 2 : calls,
       })),
     ),
   )(
@@ -1205,6 +1353,47 @@ describe('taxon retrieval', () => {
 });
 
 describe('classification', () => {
+  it('preserves child authorship, status, accepted links, and missing facts', async () => {
+    const network = fakeFetch(
+      withStatus(null, (url) =>
+        url.pathname.includes('AphiaClassification')
+          ? Response.json({ AphiaID: 1, child: { AphiaID: 125732 } })
+          : Response.json([
+              record(300722, {
+                authority: 'Gmelin, 1789',
+                status: 'unaccepted',
+                valid_AphiaID: 126501,
+                valid_name: 'Phycis blennoides',
+              }),
+              record(126501, {
+                status: 'accepted',
+                valid_AphiaID: 126501,
+                valid_name: 'Phycis blennoides',
+              }),
+              record(1363941, { authority: null, valid_AphiaID: null, valid_name: null }),
+              record(2),
+            ]),
+      ),
+    );
+    const result = await settle(
+      runToolContract(getClassificationTool, { aphiaId: 125732, includeChildren: true }),
+    );
+    expectParity(result);
+    const { children } = z.looseObject({}).parse(result.structuredContent);
+    expect(children).toStrictEqual([
+      {
+        aphiaId: 300722,
+        authority: 'Gmelin, 1789',
+        status: 'unaccepted',
+        validAphiaId: 126501,
+        validName: 'Phycis blennoides',
+      },
+      { aphiaId: 126501, status: 'accepted', validAphiaId: 126501, validName: 'Phycis blennoides' },
+      { aphiaId: 1363941, authority: null, validAphiaId: null, validName: null },
+      { aphiaId: 2 },
+    ]);
+    expect(network.calls).toHaveLength(3);
+  });
   it.each(['malformed child', [], { rank: 'identity missing' }])(
     'rejects a malformed classification child below 600 valid ancestors: %j',
     async (child) => {
@@ -1300,15 +1489,14 @@ describe('classification', () => {
     },
   );
   it.each([
-    { offset: 1, notice: 'Use worms_list_reference with topic: ranks to inspect rank vocabulary.' },
-    {
-      offset: 51,
-      notice:
-        'Call worms_get_classification with offset: 1 to return to the first children page; use worms_list_reference with topic: ranks to inspect rank vocabulary.',
-    },
+    { offset: 1, marineOnly: true, extantOnly: true },
+    { offset: 1, marineOnly: false, extantOnly: true },
+    { offset: 1, marineOnly: true, extantOnly: false },
+    { offset: 1, marineOnly: false, extantOnly: false },
+    { offset: 51, marineOnly: false, extantOnly: false },
   ])(
-    'returns to the first children page only from an empty page past it (offset $offset)',
-    async ({ offset, notice }) => {
+    'suggests broadening an empty children page for %j',
+    async ({ offset, marineOnly, extantOnly }) => {
       const network = fakeFetch(
         withStatus(record(223913, { status: 'accepted', valid_AphiaID: 223913 }), (url) =>
           url.pathname === '/rest/AphiaClassificationByAphiaID/223913'
@@ -1317,16 +1505,33 @@ describe('classification', () => {
         ),
       );
       const result = await settle(
-        runToolContract(getClassificationTool, { aphiaId: 223913, includeChildren: true, offset }),
+        runToolContract(getClassificationTool, {
+          aphiaId: 223913,
+          includeChildren: true,
+          offset,
+          marineOnly,
+          extantOnly,
+        }),
       );
       expectParity(result);
       expect(result.structuredContent).toMatchObject({
         ranks: [{ aphiaId: 137205 }, { aphiaId: 223913 }],
         children: [],
         page: { offset, returnedCount: 0, hasMore: false, nextOffset: null },
-        echo: { includeChildren: true, marineOnly: true, extantOnly: true, offset },
-        notice,
+        echo: { includeChildren: true, marineOnly, extantOnly, offset },
       });
+      const notice = z
+        .object({ notice: z.string().optional() })
+        .parse(result.structuredContent).notice;
+      if (!marineOnly && !extantOnly && offset === 1) {
+        expect(result.structuredContent).not.toHaveProperty('notice');
+      } else {
+        expect(notice).toEqual(expect.any(String));
+        expect(String(notice).includes('marineOnly: false')).toBe(marineOnly);
+        expect(String(notice).includes('extantOnly: false')).toBe(extantOnly);
+        expect(String(notice).includes('offset: 1')).toBe(offset > 1);
+        expect(notice).not.toContain('worms_list_reference');
+      }
       expect(network.calls.at(-1)?.searchParams.get('offset')).toBe(String(offset));
     },
   );
@@ -1342,6 +1547,38 @@ describe('classification', () => {
       '/rest/AphiaClassificationByAphiaID/1',
     ]);
   });
+  it.each(['disabled', 'failed', 'past the end', 'empty'] as const)(
+    'preserves the accepted-ID notice with %s children',
+    async (state) => {
+      const network = fakeFetch(
+        withStatus(record(300722, { status: 'unaccepted', valid_AphiaID: 126501 }), (url) => {
+          if (url.pathname.includes('AphiaClassification'))
+            return Response.json({ AphiaID: 300722 });
+          if (state === 'failed') return new Response(null, { status: 403 });
+          if (state === 'empty') return new Response(null, { status: 204 });
+          return Response.json([record(1)]);
+        }),
+      );
+      const result = await settle(
+        runToolContract(getClassificationTool, {
+          aphiaId: 300722,
+          includeChildren: state !== 'disabled',
+          resultOffset: state === 'past the end' ? 100 : 0,
+        }),
+      );
+      expectParity(result);
+      const linked =
+        'AphiaID 300722 is not the accepted name; WoRMS links it to accepted AphiaID 126501. This is the lineage WoRMS records for AphiaID 300722; call worms_get_classification with aphiaId: 126501 for the accepted lineage.';
+      expect(result.structuredContent).toHaveProperty(
+        'notice',
+        state === 'empty'
+          ? `${linked} To broaden the children search, call worms_get_classification with marineOnly: false or extantOnly: false.`
+          : linked,
+      );
+      if (state === 'past the end') expect(result.structuredContent).toHaveProperty('children', []);
+      expect(network.calls).toHaveLength(state === 'disabled' ? 2 : 3);
+    },
+  );
 });
 
 describe('schema boundaries', () => {
@@ -1400,7 +1637,7 @@ describe('schema boundaries', () => {
     );
     expectParity(result);
     expect(result.structuredContent).toMatchObject({ aphiaId: 137205 });
-    expect(network.calls.length).toBe(tool === crosswalkIdTool ? 1 : 2);
+    expect(network.calls).toHaveLength(2);
     expect(
       tool.output.safeParse({ ...tool.output.parse(result.structuredContent), aphiaId: '137205' })
         .success,

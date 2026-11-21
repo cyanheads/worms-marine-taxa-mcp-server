@@ -123,12 +123,16 @@ function statusReason(status: number): FailureReason {
   return status >= 500 ? 'upstream_unavailable' : 'invalid_upstream_response';
 }
 
+/** Time starts when a paced attempt begins. All attempts share the tool deadline. */
+export type RequestPolicy = { attemptTimeoutMs: number; maxRetries: number };
+
 /** Fetch one allowlisted endpoint with bounded reading, validation and retries. */
 export async function request<T>(
   scope: WormsScope,
   endpoint: string,
   query: URLSearchParams,
   parse: (data: unknown) => T,
+  policy: RequestPolicy = { attemptTimeoutMs: 10_000, maxRetries: 1 },
 ): Promise<T | null> {
   scope.check();
   if (!allowedEndpoint.test(endpoint)) throw new Error('Unsupported WoRMS endpoint.');
@@ -143,7 +147,7 @@ export async function request<T>(
             const attemptController = new AbortController();
             const timer = setTimeout(
               () => attemptController.abort(failure('upstream_timeout')),
-              Math.min(10_000, scope.expiresAt - Date.now()),
+              Math.min(policy.attemptTimeoutMs, scope.expiresAt - Date.now()),
             );
             const fetchSignal = AbortSignal.any([pacedSignal, attemptController.signal]);
             const live = () => {
@@ -223,7 +227,7 @@ export async function request<T>(
       {
         signal: scope.signal,
         deadlineMs: Math.max(1, scope.expiresAt - Date.now()),
-        maxRetries: 1,
+        maxRetries: policy.maxRetries,
         baseDelayMs: 1000,
         maxDelayMs: 45_000,
         context: scope.ctx,

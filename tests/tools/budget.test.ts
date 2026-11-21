@@ -2,6 +2,7 @@
  * @fileoverview Complete-result budget and lossless stateless continuation contracts.
  * @module tests/tools/budget.test
  */
+import { z } from '@cyanheads/mcp-ts-core';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { crosswalkIdTool } from '@/mcp-server/tools/definitions/crosswalk-id.tool.js';
@@ -35,7 +36,7 @@ it('bounds complete results and reassembles Unicode distribution evidence', asyn
     locality: `${i}:海🌊\\"\n${'x'.repeat(200)}`,
     occurrence: null,
   }));
-  fakeFetch(withStatus(null, () => Response.json(rows)));
+  fakeFetch(withStatus(record(1), () => Response.json(rows)));
   const collected = await collectLocal(
     (resultOffset) =>
       runToolContract(getDistributionsTool, {
@@ -323,7 +324,7 @@ it('discloses exact requiredBytes for an oversized fuzzy group with two enrichme
     oversizedItem: true,
     echo: { fuzzy: true, matchAuthority: false },
     notice:
-      'The scientific-name group at inputIndex 0 returned 50 matches; completeness is unknown. Call worms_resolve_taxon with fuzzy: false, or with a fuller name for that group, such as genus plus species epithet.',
+      'The scientific-name group at inputIndex 0 returned 50 matches; completeness is unknown. Call worms_resolve_taxon with fuzzy: false and omit matchAuthority, or retry with a fuller name for that group, such as genus plus species epithet.',
     requiredBytes: Buffer.byteLength(JSON.stringify(result)),
   });
 });
@@ -355,13 +356,18 @@ function fakeNameGroups(match: (name: string, index: number) => Record<string, u
 }
 
 /** Follow both scientific continuation coordinates, checking each page's surfaces and budget. */
-async function walkNames(names: string[]) {
+async function walkNames(names: string[], matchAuthority?: boolean) {
   const pages: NamePage[] = [];
   let inputOffset = 0;
   let matchOffset = 0;
   for (;;) {
     const result = await settle(
-      runToolContract(resolveTaxonTool, { names, inputOffset, matchOffset }),
+      runToolContract(resolveTaxonTool, {
+        names,
+        inputOffset,
+        matchOffset,
+        ...(matchAuthority === undefined ? {} : { fuzzy: true, matchAuthority }),
+      }),
     );
     expectParity(result);
     const data = result.structuredContent as NamePage;
@@ -383,22 +389,32 @@ const longAuthorities = (name: string, index: number) => ({
 
 it('continues matches inside a single name group then preserves the next miss', async () => {
   const matches = Array.from({ length: 50 }, (_, i) =>
-    record(i + 1, { scientificname: `${i}${'🌊'.repeat(80)}`, authority: null }),
+    record(i + 1, {
+      scientificname: `${i}${'🌊'.repeat(80)}`,
+      authority: null,
+      kingdom: 'Animalia',
+    }),
   );
-  fakeFetch((url) =>
-    Response.json(
+  const network = fakeFetch((url) => {
+    expect(url.searchParams.get('match_authority')).toBe('true');
+    return Response.json(
       url.searchParams.getAll('scientificnames[]').map((name) => (name === 'A' ? matches : [])),
-    ),
-  );
-  const pages = await walkNames(['A', 'B']);
+    );
+  });
+  const pages = await walkNames(['A', 'B'], true);
+  expect(pages.length).toBeGreaterThan(1);
+  expect(network.calls).toHaveLength(pages.length);
   for (const data of pages)
     expect(data).toMatchObject({
       oversizedItem: false,
       notice: expect.stringContaining('completeness is unknown'),
+      echo: { fuzzy: true, matchAuthority: true },
     });
   expect(pages.at(-1)?.results.at(-1)?.inputIndex).toBe(1);
   expect(pages.flatMap((data) => data.results.flatMap((row) => row.matches))).toEqual(
-    Array.from({ length: 50 }, (_, i) => expect.objectContaining({ aphiaId: i + 1 })),
+    Array.from({ length: 50 }, (_, i) =>
+      expect.objectContaining({ aphiaId: i + 1, kingdom: 'Animalia' }),
+    ),
   );
 });
 
@@ -493,7 +509,7 @@ it('adds fuzzy: false to the 50-match notice only after a fuzzy call', async () 
   expect(result.structuredContent).toMatchObject({
     echo: { fuzzy: true, matchAuthority: false },
     notice:
-      'The scientific-name groups at inputIndex 0, 2 returned 50 matches each; completeness is unknown. Call worms_resolve_taxon with fuzzy: false, or with fuller names for those groups, such as genus plus species epithet.',
+      'The scientific-name groups at inputIndex 0, 2 returned 50 matches each; completeness is unknown. Call worms_resolve_taxon with fuzzy: false and omit matchAuthority, or retry with fuller names for those groups, such as genus plus species epithet.',
   });
 });
 
@@ -695,16 +711,37 @@ it.each(
 )(
   'consumes every local segment of an upstream $mode $count-row page before advancing',
   async ({ mode, count }) => {
+    const expectedFields = (id: number) =>
+      mode === 'children'
+        ? { authority: 'Linnaeus, 1758', validAphiaId: id, validName: 'Accepted child' }
+        : mode === 'synonyms'
+          ? {}
+          : { kingdom: 'Animalia' };
+    const childContinuation = mode === 'children' && count === 50;
     const rows = Array.from({ length: count }, (_, i) =>
-      record(i + 2, { scientificname: `${i}${'海'.repeat(100)}` }),
+      record(i + 2, {
+        scientificname: `${i}${'海'.repeat(100)}`,
+        ...(mode === 'children'
+          ? { authority: 'Linnaeus, 1758', valid_AphiaID: i + 2, valid_name: 'Accepted child' }
+          : mode === 'synonyms'
+            ? {}
+            : { kingdom: 'Animalia' }),
+      }),
     );
     const network = fakeFetch((url) => {
       if (url.pathname.includes('AphiaRecordByAphiaID'))
         return Response.json(record(1, { status: 'accepted' }));
       if (url.pathname.includes('AphiaClassification')) return Response.json({ AphiaID: 1 });
-      return url.searchParams.get('offset') === '51'
-        ? new Response(null, { status: 204 })
-        : Response.json(rows);
+      if (url.searchParams.get('offset') !== '51') return Response.json(rows);
+      return childContinuation
+        ? Response.json([
+            record(52, {
+              authority: 'Linnaeus, 1758',
+              valid_AphiaID: 52,
+              valid_name: 'Accepted child',
+            }),
+          ])
+        : new Response(null, { status: 204 });
     });
     let resultOffset = 0;
     const ids: number[] = [];
@@ -735,9 +772,10 @@ it.each(
         nextResultOffset: number | null;
         page: { hasMore: null; nextOffset: number };
       };
-      ids.push(
-        ...(data.synonyms ?? data.children ?? data.results![0]!.matches).map((row) => row.aphiaId),
-      );
+      for (const row of data.synonyms ?? data.children ?? data.results![0]!.matches) {
+        expect(row).toMatchObject(expectedFields(row.aphiaId));
+        ids.push(row.aphiaId);
+      }
       expect(data.page.hasMore).toBe(count === 50 ? null : false);
       expect(data.page.nextOffset).toBe(
         data.nextResultOffset === null ? (count === 50 ? 51 : null) : 1,
@@ -746,10 +784,16 @@ it.each(
       expect(data.nextResultOffset).toBeGreaterThan(resultOffset);
       resultOffset = data.nextResultOffset;
     }
-    expect(ids).toEqual(Array.from({ length: count }, (_, i) => i + 2));
-    const empty = await settle(call(51, 0));
-    expectParity(empty);
-    expect(empty.structuredContent).toMatchObject({ page: { hasMore: false, nextOffset: null } });
+    expect(resultOffset).toBeGreaterThan(0);
+    const next = await settle(call(51, 0));
+    expectParity(next);
+    expect(next.structuredContent).toMatchObject({ page: { hasMore: false, nextOffset: null } });
+    if (childContinuation) {
+      const { children } = z.looseObject({}).parse(next.structuredContent);
+      expect(children).toStrictEqual([{ aphiaId: 52, ...expectedFields(52) }]);
+      ids.push(52);
+    }
+    expect(ids).toEqual(Array.from({ length: count + Number(childContinuation) }, (_, i) => i + 2));
     if (mode === 'vernacular' || mode === 'contains')
       expect(new Set(network.calls.map((url) => url.searchParams.get('like')))).toEqual(
         new Set([String(mode === 'contains')]),
@@ -767,7 +811,7 @@ it.each(['ranks', 'trait_types', 'traits'] as const)(
       taxonRank: `${i}${'海'.repeat(80)}`,
       children: [{ measurementTypeID: '001', measurementType: null }],
     }));
-    fakeFetch(withStatus(null, () => Response.json(rows)));
+    fakeFetch(withStatus(record(1), () => Response.json(rows)));
     const collected = await collectLocal(
       (resultOffset) =>
         mode === 'traits'
@@ -805,16 +849,18 @@ it.each(['ranks', 'trait_types', 'traits'] as const)(
 
 it('retains ordered opaque crosswalk identifiers and successful empty types across pages', async () => {
   const ids = Array.from({ length: 80 }, (_, i) => `${i}00${'海'.repeat(100)}`);
-  fakeFetch((url) =>
-    url.searchParams.get('type') === 'iucn'
-      ? new Response(null, { status: 403 })
-      : Response.json(
-          url.searchParams.get('type') === 'algaebase'
-            ? ids
-            : url.searchParams.get('type') === 'lsid'
-              ? ['0001']
-              : [],
-        ),
+  fakeFetch(
+    withStatus(record(1), (url) =>
+      url.searchParams.get('type') === 'iucn'
+        ? new Response(null, { status: 403 })
+        : Response.json(
+            url.searchParams.get('type') === 'algaebase'
+              ? ids
+              : url.searchParams.get('type') === 'lsid'
+                ? ['0001']
+                : [],
+          ),
+    ),
   );
   let resultOffset = 0;
   const all: string[] = [];
@@ -828,6 +874,7 @@ it('retains ordered opaque crosswalk identifiers and successful empty types acro
     };
     expect(data.ids.bold).toEqual([]);
     expect(result.structuredContent).toMatchObject({
+      found: true,
       typeTotals: { algaebase: 80, bold: 0, lsid: 1 },
       failedTypes: [{ type: 'iucn' }],
     });
@@ -844,7 +891,7 @@ it('retains ordered opaque crosswalk identifiers and successful empty types acro
 
 it('discloses an indivisible oversized item and advances without clipping', async () => {
   const locality = '海'.repeat(10000);
-  fakeFetch(withStatus(null, () => Response.json([{ locality }, { locality: 'last' }])));
+  fakeFetch(withStatus(record(1), () => Response.json([{ locality }, { locality: 'last' }])));
   const result = await settle(runToolContract(getDistributionsTool, { aphiaId: 1 }));
   expectParity(result);
   expect(result.structuredContent).toMatchObject({
@@ -873,7 +920,7 @@ it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
 );
 
 it('returns terminal empty evidence for a position past the local sequence', async () => {
-  fakeFetch(withStatus(null, () => Response.json([{ locality: null }])));
+  fakeFetch(withStatus(record(1), () => Response.json([{ locality: null }])));
   const result = await settle(
     runToolContract(getDistributionsTool, { aphiaId: 1, resultOffset: 99 }),
   );
@@ -889,7 +936,7 @@ it('returns terminal empty evidence for a position past the local sequence', asy
 it('includes effective-filter enrichment when selecting a byte-boundary prefix', async () => {
   const value = 'x'.repeat(512);
   fakeFetch(
-    withStatus(null, () =>
+    withStatus(record(1), () =>
       Response.json(
         Array.from({ length: 50 }, (_, i) => ({
           locality: `${i}`,

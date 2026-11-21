@@ -18,10 +18,12 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  missingTaxonNotice,
   normalizeAphiaId,
   optionalEvidenceTextSchema,
   statusErrorSchema,
   statusNotice,
+  type TaxonRecord,
   WormsScope,
 } from '../../../services/worms/index.js';
 
@@ -70,18 +72,23 @@ function tagged(aphiaId: number, rows: Row[], scope: WormsScope): Row[] {
 /**
  * Accepted-taxon rows (window 0 only), then up to ten synonyms from the one 50-row synonym page
  * holding synonymOffset, read one at a time. A failed synonym read is recorded, never fatal; the
- * record, synonym-page, and accepted-row reads are required.
+ * synonym-page and accepted-row reads are required.
  */
-async function unionWindow(aphiaId: number, synonymOffset: number, scope: WormsScope) {
+async function unionWindow(
+  aphiaId: number,
+  record: TaxonRecord | null,
+  synonymOffset: number,
+  scope: WormsScope,
+) {
   const service = getWormsService();
-  const record = await service.record(aphiaId, scope);
   const acceptedAphiaId =
     record?.validAphiaId ?? (record?.status === 'accepted' ? record.aphiaId : null);
   if (acceptedAphiaId === null)
     return {
-      rows: synonymOffset
-        ? []
-        : tagged(aphiaId, await service.distributions(aphiaId, scope), scope),
+      rows:
+        record && synonymOffset === 0
+          ? tagged(aphiaId, await service.distributions(aphiaId, scope), scope)
+          : [],
       synonymUnion: {
         acceptedAphiaId,
         synonymOffset,
@@ -89,7 +96,9 @@ async function unionWindow(aphiaId: number, synonymOffset: number, scope: WormsS
         nextSynonymOffset: null,
         failedSynonyms: [],
       },
-      statusFragment: `WoRMS links no accepted taxon to AphiaID ${aphiaId}, so these are its own rows and no synonyms were read; call worms_get_taxon with aphiaIds: [${aphiaId}] to inspect its status.`,
+      statusFragment: record
+        ? `WoRMS links no accepted taxon to AphiaID ${aphiaId}, so these are its own rows and no synonyms were read; call worms_get_taxon with aphiaIds: [${aphiaId}] to inspect its status.`
+        : undefined,
     };
   const start = synonymOffset % 50;
   const synonymPage = await service.synonyms(acceptedAphiaId, synonymOffset - start + 1, scope);
@@ -165,6 +174,12 @@ export const getDistributionsTool = tool('worms_get_distributions', {
   output: z.object({
     ...localPageFields,
     aphiaId: aphiaIdSchema,
+    found: z
+      .boolean()
+      .nullable()
+      .describe(
+        'Whether WoRMS has the submitted taxon record; null when the optional status read failed.',
+      ),
     unfilteredCount: z
       .number()
       .int()
@@ -251,24 +266,26 @@ export const getDistributionsTool = tool('worms_get_distributions', {
   async handler(raw, ctx) {
     const input = { ...raw, aphiaId: normalizeAphiaId(raw.aphiaId) };
     using scope = new WormsScope(ctx);
+    const service = getWormsService();
+    const { record, statusError } = input.includeSynonyms
+      ? { record: await service.record(input.aphiaId, scope), statusError: undefined }
+      : await service.status(input.aphiaId, scope);
+    const found = statusError ? null : record !== null;
     let rows: Row[];
     let synonymUnion: z.infer<typeof synonymUnionSchema> | undefined;
-    let statusError: z.infer<typeof itemErrorSchema> | undefined;
     let statusFragment: string | undefined;
     if (input.includeSynonyms) {
       ({ rows, synonymUnion, statusFragment } = await unionWindow(
         input.aphiaId,
+        record,
         input.synonymOffset,
         scope,
       ));
     } else {
-      const service = getWormsService();
-      const status = await service.status(input.aphiaId, scope);
-      statusError = status.statusError;
-      rows = await service.distributions(input.aphiaId, scope);
+      rows = found === false ? [] : await service.distributions(input.aphiaId, scope);
       statusFragment = statusNotice(
         input.aphiaId,
-        status.record,
+        record,
         (valid) =>
           `Call worms_get_distributions with aphiaId: ${valid}, or with includeSynonyms: true to combine the accepted taxon's records with its synonyms'.`,
       );
@@ -294,20 +311,23 @@ export const getDistributionsTool = tool('worms_get_distributions', {
         )
       );
     });
-    /** Without fetched rows, dropping filters returns the same empty set, so only the ID check remains. */
-    const notice = [
-      statusFragment,
-      distributions.length !== 0
-        ? undefined
-        : rows.length > 0
-          ? 'Call worms_get_distributions without filters to inspect recorded distributions, or worms_get_taxon to check the AphiaID.'
-          : 'Call worms_get_taxon to check the AphiaID.',
-      distributions.length === 0 && rows.length > 0 && textFilters.length > 0
-        ? 'Call worms_list_reference with topic: distribution_terms for observed filter values.'
-        : undefined,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    const notices = statusFragment ? [statusFragment] : [];
+    if (found === false) {
+      notices.push(missingTaxonNotice(input.aphiaId));
+    } else if (distributions.length === 0) {
+      if (rows.length === 0) {
+        notices.push('Call worms_get_taxon to check the AphiaID.');
+      } else {
+        notices.push(
+          'Call worms_get_distributions without filters to inspect recorded distributions, or worms_get_taxon to check the AphiaID.',
+        );
+        if (textFilters.length > 0)
+          notices.push(
+            'Call worms_list_reference with topic: distribution_terms for observed filter values.',
+          );
+      }
+    }
+    const notice = notices.join(' ');
     const enrichment = { echo, ...(notice ? { notice } : {}) };
     ctx.enrich(enrichment);
     scope.check();
@@ -316,6 +336,7 @@ export const getDistributionsTool = tool('worms_get_distributions', {
       input.resultOffset,
       (segment, pagination) => ({
         aphiaId: input.aphiaId,
+        found,
         unfilteredCount: rows.length,
         filteredCount: distributions.length,
         distributions: segment,

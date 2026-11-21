@@ -15,7 +15,13 @@ import {
   traitSchema,
   vernacularSchema,
 } from './schemas.js';
-import { disposeTransport, failure, request, type WormsScope } from './transport.js';
+import {
+  disposeTransport,
+  failure,
+  type RequestPolicy,
+  request,
+  type WormsScope,
+} from './transport.js';
 
 /** Validate a shallow upstream object without traversing nested trees recursively. */
 function object(value: unknown): Record<string, unknown> {
@@ -41,8 +47,11 @@ async function list<T>(
   endpoint: string,
   query: URLSearchParams,
   normalize: (row: unknown) => T,
+  policy?: RequestPolicy,
 ): Promise<T[]> {
-  return (await request(scope, endpoint, query, (data) => scan(data, scope, normalize))) ?? [];
+  return (
+    (await request(scope, endpoint, query, (data) => scan(data, scope, normalize), policy)) ?? []
+  );
 }
 /** Preserve omissions and nulls while applying documented field names. */
 function mapped(raw: Record<string, unknown>, fields: Record<string, string>) {
@@ -170,15 +179,14 @@ export class WormsService {
   /** Exact/fuzzy name batches preserve every submitted position and duplicate. */
   async names(
     names: string[],
-    fuzzy: boolean,
-    marineOnly: boolean,
-    extantOnly: boolean,
+    options: { fuzzy: boolean; marineOnly: boolean; extantOnly: boolean; matchAuthority: boolean },
     scope: WormsScope,
   ) {
+    const { fuzzy, marineOnly, extantOnly, matchAuthority } = options;
     const query = new URLSearchParams({
       marine_only: String(marineOnly),
       extant_only: String(extantOnly),
-      ...(fuzzy ? { match_authority: 'false' } : { like: 'false' }),
+      ...(fuzzy ? { match_authority: String(matchAuthority) } : { like: 'false' }),
     });
     for (const name of names) query.append('scientificnames[]', name);
     return (
@@ -227,20 +235,25 @@ export class WormsService {
   }
   /** Retrieve the complete, unpaged source list of one taxon in source order; 204 is an empty list. */
   sources(id: number, scope: WormsScope) {
-    return list(scope, `AphiaSourcesByAphiaID/${id}`, new URLSearchParams(), (row) =>
-      checked(
-        sourceSchema,
-        mapped(object(row), {
-          sourceId: 'source_id',
-          use: 'use',
-          reference: 'reference',
-          page: 'page',
-          url: 'url',
-          link: 'link',
-          fulltext: 'fulltext',
-          doi: 'doi',
-        }),
-      ),
+    return list(
+      scope,
+      `AphiaSourcesByAphiaID/${id}`,
+      new URLSearchParams(),
+      (row) =>
+        checked(
+          sourceSchema,
+          mapped(object(row), {
+            sourceId: 'source_id',
+            use: 'use',
+            reference: 'reference',
+            page: 'page',
+            url: 'url',
+            link: 'link',
+            fulltext: 'fulltext',
+            doi: 'doi',
+          }),
+        ),
+      { attemptTimeoutMs: 40_000, maxRetries: 0 },
     );
   }
   /** Validate and flatten the complete root-to-tip classification iteratively. */

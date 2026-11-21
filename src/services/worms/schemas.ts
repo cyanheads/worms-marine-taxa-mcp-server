@@ -165,6 +165,7 @@ export const matchSchema = taxonRecordSchema
     validAphiaId: true,
     validName: true,
     validAuthority: true,
+    kingdom: true,
     matchType: true,
     url: true,
   })
@@ -180,8 +181,11 @@ export const childSchema = taxonRecordSchema
   .pick({
     aphiaId: true,
     scientificname: true,
+    authority: true,
     rank: true,
     status: true,
+    validAphiaId: true,
+    validName: true,
   })
   .describe('Direct child taxon.');
 export const synonymSchema = taxonRecordSchema
@@ -226,6 +230,10 @@ export const statusErrorSchema = itemErrorSchema
   .describe(
     'Failed taxonomic-status read; evidence is unaffected, but whether the AphiaID is its accepted name is unknown.',
   );
+/** Guide callers to the resolver after a confirmed miss on the submitted record. */
+export function missingTaxonNotice(aphiaId: number) {
+  return `WoRMS has no record for AphiaID ${aphiaId}. Call worms_resolve_taxon with a scientific name to find an AphiaID.`;
+}
 /**
  * Notice for a linked preferred/accepted ID, or an absent accepted link. Alternative representations
  * remain accepted. Self-valid and missing records yield none; upstream prose never enters the text.

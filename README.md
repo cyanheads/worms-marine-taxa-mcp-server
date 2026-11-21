@@ -51,7 +51,8 @@ Every AphiaID selector accepts a positive safe integer, a decimal string, or a c
 ### `worms_resolve_taxon` <sub>tool</sub>
 
 - A nonempty `names` list (no total-input ceiling, at most 50 per upstream request) or one `vernacular`, never both. `fuzzy: true` opts into TAXAMATCH matching; `marineOnly` and `extantOnly` default to `true` for names. Vernacular search matches a whole recorded common name, or with `vernacularMatch: "contains"` every recorded name containing the text (`grouper` finds no exact match but many by contains); it applies neither filter
-- Each result keeps its `inputIndex` (duplicates included), every match with `status`, `validAphiaId`, and `validName`, and a `guidance` line on a miss; continue with `nextInputOffset` and `nextMatchOffset`
+- With `fuzzy: true`, set `matchAuthority: true` to require matching supplied authorship. It defaults to `false` in fuzzy mode. Incomplete authorship can miss under strict matching. Omit `matchAuthority` for exact and vernacular searches
+- Each result keeps its `inputIndex` (duplicates included), every match with any kingdom, status, and accepted-name fields WoRMS supplies, and a `guidance` line on a miss. Continue with `nextInputOffset` and `nextMatchOffset`, keeping the matching options unchanged
 - Vernacular results page with the upstream `offset` (1-based, steps of 50) and the local `resultOffset`
 
 ---
@@ -68,7 +69,7 @@ Every AphiaID selector accepts a positive safe integer, a decimal string, or a c
 ### `worms_get_classification` <sub>tool</sub>
 
 - One `aphiaId`; `ranks` is the root-to-tip lineage, with `found: false` when WoRMS has none
-- `includeChildren: true` adds one 50-row page of direct children (`offset`, `marineOnly`, `extantOnly`); a failed children lookup returns `childrenError` beside the lineage
+- `includeChildren: true` adds one 50-row page of direct children (`offset`, `marineOnly`, `extantOnly`), with authorship and accepted-name links where supplied. An empty upstream page can suggest relaxing active filters or returning to the first page. A failed children lookup returns `childrenError` beside the lineage
 - The submitted AphiaID keeps its own recorded lineage. A `notice` names its linked accepted AphiaID, or the preferred AphiaID for an accepted alternative representation; a failed status lookup returns `statusError` beside the lineage
 
 ---
@@ -83,16 +84,18 @@ Every AphiaID selector accepts a positive safe integer, a decimal string, or a c
 ### `worms_get_distributions` <sub>tool</sub>
 
 - One `aphiaId`; optional `recordStatus` (`valid`, `doubtful`, `inaccurate`), `establishmentMeans`, `invasiveness`, and `occurrence` filters combine with AND. `recordStatus` ignores case and surrounding whitespace and echoes its lowercase code; the others match case-insensitive whole values without trimming populated strings, with observed values in `worms_list_reference` topic `distribution_terms`. Blank filters are omitted
+- `found: true` confirms the taxon record even when no distributions are returned. A confirmed missing record gives `found: false` and resolver guidance. A failed optional status read gives `found: null` and `statusError` beside the rows. Synonym union requires the status read to succeed
 - Reports `unfilteredCount` and `filteredCount`; rows carry the locality, its MarineRegions `locationId`, and status fields in source order
 - WoRMS attaches records to individual name usages, so by default the tool reads that AphiaID's own records. `includeSynonyms: true` combines the accepted taxon's records with those of its synonyms, 10 synonyms per call, each row tagged `sourceAphiaId`; `synonymUnion` reports the window, the `nextSynonymOffset` to continue from, and any `failedSynonyms`
-- A `notice` names the linked accepted AphiaID, distinguishing an accepted alternative representation from its preferred AphiaID; without `includeSynonyms`, a failed status lookup returns `statusError` beside the rows
+- A `notice` names the linked accepted AphiaID or the preferred AphiaID for an accepted alternative representation
 
 ---
 
 ### `worms_get_traits` <sub>tool</sub>
 
 - One `aphiaId`; `includeInherited` (default `true`) adds attributes recorded on higher taxa. On an accepted taxon WoRMS also returns attributes recorded on its synonyms whatever `includeInherited` is set to; `inheritedFrom` names the source taxon in both cases
-- A `notice` names the linked accepted AphiaID, distinguishing an accepted alternative representation from its preferred AphiaID; a failed status lookup returns `statusError` beside the attributes
+- `found: true` confirms the taxon record even when no attributes are returned. A confirmed missing record gives `found: false` and resolver guidance. A failed optional status read gives `found: null` and `statusError` beside the attributes
+- A `notice` names the linked accepted AphiaID or the preferred AphiaID for an accepted alternative representation
 - Every node keeps `nodeIndex`, `parentIndex`, and `depth` from the full tree, so units and qualifiers stay attached to their values across pages; values and references are verbatim
 - `measurementType` (case-insensitive whole value, such as `Body size`) keeps each matching node with its subtree and ancestors, indices unchanged; `totalCount` counts that set and `unfilteredCount` the whole tree
 
@@ -101,7 +104,8 @@ Every AphiaID selector accepts a positive safe integer, a decimal string, or a c
 ### `worms_crosswalk_id` <sub>tool</sub>
 
 - Exactly one of `aphiaId` (forward) or `externalId` with `type` (reverse). Forward reads one `type` or all nine: `algaebase`, `bold`, `dyntaxa`, `fishbase`, `iucn`, `lsid`, `ncbi`, `tsn`, `gisd`
-- Forward returns `ids` per type, `typeTotals` (0 means none recorded), and `failedTypes` for systems that errored; reverse returns `found` and the full record. IDs stay opaque strings, leading zeros included
+- Forward returns IDs for the submitted name usage, with complete fetched counts in `typeTotals` and individual lookup failures in `failedTypes` when at least one type answered. If a confirmed taxon has a zero-total type, follow the guidance to check its synonyms for that same type. A linked accepted or preferred AphiaID is reported in `notice`
+- Forward `found` is `true` for a confirmed record, `false` for a confirmed miss, or `null` with `statusError` if the record check failed and identifier lookup continued. Reverse returns `found` and the full record on a hit. IDs stay opaque strings, leading zeros included
 
 ---
 
@@ -179,7 +183,7 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 

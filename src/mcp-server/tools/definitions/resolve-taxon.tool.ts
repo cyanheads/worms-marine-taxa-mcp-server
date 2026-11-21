@@ -59,6 +59,12 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       .boolean()
       .default(false)
       .describe('Explicit fuzzy scientific-name matching; unavailable for vernacular.'),
+    matchAuthority: z
+      .boolean()
+      .optional()
+      .describe(
+        'Fuzzy scientific names only. Require WoRMS to match supplied authorship; incomplete or differing authorship may miss. Default false when fuzzy; omit in other modes.',
+      ),
     marineOnly: z
       .boolean()
       .default(true)
@@ -138,7 +144,10 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
           .enum(['exact', 'contains'])
           .optional()
           .describe('Effective vernacular match mode.'),
-        matchAuthority: z.boolean().optional().describe('Fuzzy authority matching, always false.'),
+        matchAuthority: z
+          .boolean()
+          .optional()
+          .describe('Effective authority matching in fuzzy mode only.'),
       })
       .describe('Effective matching options.'),
   },
@@ -198,7 +207,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'Upstream response exceeds 8 MiB.',
       recovery:
-        'If several names were submitted, submit fewer per call; for one name or a vernacular, submit a more specific one, or use exact matching if fuzzy: true or vernacularMatch: "contains" was set. This tool cannot return the oversized WoRMS response.',
+        'If several names were submitted, submit fewer per call; for one name or a vernacular, submit a more specific one, or use exact matching if fuzzy: true or vernacularMatch: "contains" was set. For an exact scientific-name retry, omit fuzzy and matchAuthority.',
       retryable: false,
       thrownBy: 'service',
     },
@@ -214,7 +223,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Options cannot apply to the selected matching mode.',
       recovery:
-        'Call worms_resolve_taxon with fuzzy and filters for names, or only vernacular, vernacularMatch, and offset for common names.',
+        'Use matchAuthority only with names and fuzzy: true. For common names, use vernacular, vernacularMatch, offset, and resultOffset.',
     },
   ],
   async handler(input, ctx) {
@@ -222,6 +231,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     if (input.vernacular === '.' || input.vernacular === '..')
       throw ctx.fail('invalid_selector', 'vernacular cannot be . or ..');
     if (
+      (input.matchAuthority !== undefined && !input.fuzzy) ||
       (input.names && (input.offset !== 1 || input.vernacularMatch !== 'exact')) ||
       (input.vernacular && (input.fuzzy || !input.marineOnly || !input.extantOnly))
     )
@@ -284,9 +294,13 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
     }
     const names = input.names ?? [];
     const processed = names.slice(input.inputOffset, input.inputOffset + 50);
-    const groups = processed.length
-      ? await service.names(processed, input.fuzzy, input.marineOnly, input.extantOnly, scope)
-      : [];
+    const options = {
+      fuzzy: input.fuzzy,
+      marineOnly: input.marineOnly,
+      extantOnly: input.extantOnly,
+      matchAuthority: input.matchAuthority ?? false,
+    };
+    const groups = processed.length ? await service.names(processed, options, scope) : [];
     const results = processed.map((name, index) => {
       const matches = groups[index] ?? [];
       const guidance = matches.length
@@ -295,6 +309,11 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
             input.fuzzy
               ? 'Check spelling and call worms_resolve_taxon with corrected names.'
               : 'Call worms_resolve_taxon with the same names and fuzzy: true.',
+            ...(options.matchAuthority
+              ? [
+                  'Call worms_resolve_taxon with matchAuthority: false to relax authorship matching.',
+                ]
+              : []),
             ...(input.marineOnly
               ? ['Call worms_resolve_taxon with marineOnly: false to include non-marine taxa.']
               : []),
@@ -308,7 +327,7 @@ export const resolveTaxonTool = tool('worms_resolve_taxon', {
       marineOnly: input.marineOnly,
       extantOnly: input.extantOnly,
       fuzzy: input.fuzzy,
-      ...(input.fuzzy ? { matchAuthority: false } : {}),
+      ...(input.fuzzy ? { matchAuthority: options.matchAuthority } : {}),
     };
     /** The notice names only the full 50-match groups the page returns. */
     const enrichmentFor = (page: { results: { inputIndex: number }[] }) => {
@@ -389,6 +408,6 @@ function fiftyMatchNotice(indices: number[], fuzzy: boolean) {
     ? `The scientific-name group at inputIndex ${indices[0]} returned 50 matches;`
     : `The scientific-name groups at inputIndex ${indices.join(', ')} returned 50 matches each;`;
   const names = one ? 'a fuller name for that group' : 'fuller names for those groups';
-  const change = fuzzy ? `fuzzy: false, or with ${names}` : names;
+  const change = fuzzy ? `fuzzy: false and omit matchAuthority, or retry with ${names}` : names;
   return `${groups} completeness is unknown. Call worms_resolve_taxon with ${change}, such as genus plus species epithet.`;
 }

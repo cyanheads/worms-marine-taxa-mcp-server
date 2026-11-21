@@ -20,8 +20,11 @@ import {
   localOffsetSchema,
   localPageFields,
   localSlice,
+  missingTaxonNotice,
   normalizeAphiaId,
   optionalEvidenceTextSchema,
+  statusErrorSchema,
+  statusNotice,
   taxonRecordSchema,
   WormsScope,
 } from '../../../services/worms/index.js';
@@ -40,7 +43,13 @@ const outputSchema = z.object({
     .describe('Supplied or matched taxon ID; null for reverse misses.'),
   externalId: z.string().optional().describe('Opaque reverse identifier, preserved as text.'),
   type: externalTypeSchema.optional().describe('Explicitly selected identifier system.'),
-  found: z.boolean().nullable().describe('Reverse match state; null in forward mode.'),
+  found: z
+    .boolean()
+    .nullable()
+    .describe(
+      'Whether WoRMS has the submitted taxon record or a reverse match; null when the forward status read failed.',
+    ),
+  statusError: statusErrorSchema,
   ids: z
     .partialRecord(
       externalTypeSchema,
@@ -64,7 +73,9 @@ const outputSchema = z.object({
   guidance: z
     .string()
     .nullable()
-    .describe('Guidance when no identifiers or reverse match are found.'),
+    .describe(
+      'Guidance for missing taxa, answered types with zero identifiers, or reverse misses.',
+    ),
   attribution: attributionSchema,
 });
 export const crosswalkIdTool = tool('worms_crosswalk_id', {
@@ -104,7 +115,12 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
         externalId: z.string().optional().describe('Reverse opaque identifier.'),
       })
       .describe('Effective crosswalk selectors.'),
-    notice: z.string().optional().describe('Partial-outage retry guidance.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Linked accepted/preferred-AphiaID and partial-outage retry guidance, in that order.',
+      ),
   },
   enrichmentTrailer: codecTrailer('echo', 'notice'),
   errors: [
@@ -234,9 +250,14 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     if (id === undefined)
       throw ctx.fail('invalid_selector', 'Supply an AphiaID for forward lookup.');
     const requestedTypes = input.type === undefined ? [...externalTypes] : [input.type];
-    const settled = await Promise.allSettled(
-      requestedTypes.map((type) => service.externalIds(id, type, scope)),
-    );
+    const { record, statusError } = await service.status(id, scope);
+    const found = statusError ? null : record !== null;
+    const settled =
+      found === false
+        ? []
+        : await Promise.allSettled(
+            requestedTypes.map((type) => service.externalIds(id, type, scope)),
+          );
     scope.check();
     const ids: Partial<Record<(typeof externalTypes)[number], string[]>> = {};
     const failedTypes: z.infer<typeof failedTypeSchema>[] = [];
@@ -255,14 +276,20 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
       if (firstFailure instanceof McpError) throw crosswalkFailure(firstFailure, failedTypes);
       throw firstFailure;
     }
-    const enrichment = {
-      echo: { requestedTypes },
-      ...(failedTypes.length
-        ? {
-            notice: `Identifier lookups failed for ${failedTypes.map((entry) => entry.type).join(', ')}; call worms_crosswalk_id with one failed type to retry.`,
-          }
-        : {}),
-    };
+    const notice = [
+      statusNotice(
+        id,
+        record,
+        (valid) =>
+          `Call worms_crosswalk_id with aphiaId: ${valid}${input.type === undefined ? '' : ` and type: ${input.type}`} to check identifiers on that name usage.`,
+      ),
+      failedTypes.length
+        ? `Identifier lookups failed for ${failedTypes.map((entry) => entry.type).join(', ')}; call worms_crosswalk_id with one failed type to retry.`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const enrichment = { echo: { requestedTypes }, ...(notice ? { notice } : {}) };
     ctx.enrich(enrichment);
     scope.check();
     const sequence = requestedTypes.flatMap((type) =>
@@ -271,7 +298,13 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
     const typeTotals = Object.fromEntries(
       Object.entries(ids).map(([type, values]) => [type, values.length]),
     );
-    const forwardGuidance = sequence.length === 0 ? guidance : null;
+    const emptyTypes = requestedTypes.filter((type) => typeTotals[type] === 0);
+    let forwardGuidance = sequence.length === 0 ? guidance : null;
+    if (found === false) {
+      forwardGuidance = missingTaxonNotice(id);
+    } else if (found && emptyTypes.length > 0) {
+      forwardGuidance = `No identifiers were returned for ${emptyTypes.join(', ')}; call worms_get_synonyms with aphiaId: ${id}, then worms_crosswalk_id on the synonym AphiaIDs using the same identifier types.`;
+    }
     return localSlice(
       sequence,
       input.resultOffset,
@@ -287,7 +320,8 @@ export const crosswalkIdTool = tool('worms_crosswalk_id', {
           direction: 'forward' as const,
           aphiaId: id,
           ...(input.type !== undefined ? { type: input.type } : {}),
-          found: null,
+          found,
+          ...(statusError ? { statusError } : {}),
           ids: pagedIds,
           typeTotals,
           failedTypes,

@@ -173,6 +173,13 @@ export const getClassificationTool = tool('worms_get_classification', {
         result.childrenError = scope.optionalError(error);
       }
     }
+    const broader =
+      result.children?.length === 0
+        ? [
+            ...(input.marineOnly ? ['marineOnly: false'] : []),
+            ...(input.extantOnly ? ['extantOnly: false'] : []),
+          ]
+        : [];
     const notice = [
       statusNotice(
         input.aphiaId,
@@ -180,11 +187,12 @@ export const getClassificationTool = tool('worms_get_classification', {
         (valid) =>
           `This is the lineage WoRMS records for AphiaID ${input.aphiaId}; call worms_get_classification with aphiaId: ${valid} for the accepted lineage.`,
       ),
-      result.children?.length !== 0
-        ? undefined
-        : input.offset > 1
-          ? 'Call worms_get_classification with offset: 1 to return to the first children page; use worms_list_reference with topic: ranks to inspect rank vocabulary.'
-          : 'Use worms_list_reference with topic: ranks to inspect rank vocabulary.',
+      broader.length
+        ? `To broaden the children search, call worms_get_classification with ${broader.join(' or ')}.`
+        : undefined,
+      result.children?.length === 0 && input.offset > 1
+        ? 'Call worms_get_classification with offset: 1 to return to the first children page.'
+        : undefined,
     ]
       .filter(Boolean)
       .join(' ');

@@ -48,6 +48,9 @@ function expectEvidence(result: Awaited<ReturnType<typeof runToolContract>>) {
   expect(result.structuredContent).not.toHaveProperty('statusError');
 }
 
+/** Present self-accepted fixture for evidence attached to AphiaID 1. */
+const statusForOne = record(1, { status: 'accepted' });
+
 describe('synonym evidence', () => {
   it.each([0, 49, 50])(
     'redirects to the accepted ID and preserves a %i-row page',
@@ -155,7 +158,7 @@ describe('distribution evidence', () => {
     'normalizes controlled status %s before conjunctive filtering and continuation',
     async (status) => {
       fakeFetch(
-        withStatus(null, () =>
+        withStatus(statusForOne, () =>
           Response.json([
             { recordStatus: status, occurrence: 'Present' },
             { recordStatus: status, occurrence: 'Present' },
@@ -212,7 +215,7 @@ describe('distribution evidence', () => {
       {},
     ];
     const network = fakeFetch(
-      withStatus(null, (url) => {
+      withStatus(statusForOne, (url) => {
         expect(url.searchParams.toString()).toBe('');
         return Response.json(rows);
       }),
@@ -239,7 +242,9 @@ describe('distribution evidence', () => {
     expect(network.calls).toHaveLength(2);
   });
   it('retains more than a page of unfiltered evidence and ignores blank filters', async () => {
-    fakeFetch(withStatus(null, () => Response.json(Array.from({ length: 260 }, () => matching))));
+    fakeFetch(
+      withStatus(statusForOne, () => Response.json(Array.from({ length: 260 }, () => matching))),
+    );
     const result = await settle(
       runToolContract(getDistributionsTool, { aphiaId: 1, occurrence: ' ', recordStatus: '' }),
     );
@@ -253,7 +258,12 @@ describe('distribution evidence', () => {
   it.each([{}, { occurrence: 'Established' }])(
     'reports empty evidence for %j without claiming absence or suggesting the same rows',
     async (filter) => {
-      const network = fakeFetch(() => new Response(null, { status: 204 }));
+      const network = fakeFetch(
+        withStatus(
+          record(1298345, { status: 'accepted' }),
+          () => new Response(null, { status: 204 }),
+        ),
+      );
       const result = await settle(
         runToolContract(getDistributionsTool, { aphiaId: 1298345, ...filter }),
       );
@@ -276,7 +286,7 @@ describe('distribution evidence', () => {
     'distinguishes zero local matches from zero upstream rows for %j',
     async (filter, pointsToTerms) => {
       fakeFetch(
-        withStatus(null, () =>
+        withStatus(statusForOne, () =>
           Response.json([
             { ...matching, establishmentMeans: 'Native - Non-endemic' },
             { locality: null, occurrence: null, recordStatus: 'valid' },
@@ -310,7 +320,7 @@ describe('trait evidence', () => {
   it.each([{ children: {} }, { children: [{ measurementTypeID: 'not numeric' }] }])(
     'rejects malformed nested evidence %j atomically',
     async (node) => {
-      fakeFetch(withStatus(null, () => Response.json([node])));
+      fakeFetch(withStatus(statusForOne, () => Response.json([node])));
       const result = await settle(runToolContract(getTraitsTool, { aphiaId: 1 }));
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({
@@ -321,7 +331,7 @@ describe('trait evidence', () => {
   );
   it('retains depth-first branching topology, repeated values, sparse IDs and inheritance', async () => {
     fakeFetch(
-      withStatus(null, (url) => {
+      withStatus(statusForOne, (url) => {
         expect(url.searchParams.toString()).toBe('include_inherited=true');
         return Response.json([
           {
@@ -385,7 +395,7 @@ describe('trait evidence', () => {
     let node: Record<string, unknown> = { measurementValue: 'leaf' };
     for (let depth = 0; depth < 1100; depth++)
       node = { measurementTypeID: `${depth}`, children: [node] };
-    fakeFetch(withStatus(null, () => Response.json([node])));
+    fakeFetch(withStatus(statusForOne, () => Response.json([node])));
     const traits = await collectLocal(
       (resultOffset) => runToolContract(getTraitsTool, { aphiaId: 1, resultOffset }),
       'traits',
@@ -405,7 +415,7 @@ describe('trait evidence', () => {
   });
   it.each([true, false])('keeps empty inheritance=%s guidance honest', async (includeInherited) => {
     fakeFetch(
-      withStatus(null, (url) => {
+      withStatus(statusForOne, (url) => {
         expect(url.searchParams.get('include_inherited')).toBe(String(includeInherited));
         return new Response(null, { status: 204 });
       }),
@@ -499,7 +509,7 @@ describe('trait measurementType filter', () => {
     return result;
   };
   const collectTree = (tree: object[], measurementType?: string) => {
-    fakeFetch(withStatus(null, () => Response.json(tree)));
+    fakeFetch(withStatus(record(126436, { status: 'accepted' }), () => Response.json(tree)));
     return collectLocal(
       (resultOffset) =>
         traits({ aphiaId: 126436, resultOffset, ...(measurementType ? { measurementType } : {}) }),
@@ -517,7 +527,9 @@ describe('trait measurementType filter', () => {
     async (measurementType, count) => {
       const tree = await collectTree(gadusMorhua);
       expect(tree).toHaveLength(73);
-      const network = fakeFetch(withStatus(null, () => Response.json(gadusMorhua)));
+      const network = fakeFetch(
+        withStatus(record(126436, { status: 'accepted' }), () => Response.json(gadusMorhua)),
+      );
       const first = await settle(traits({ aphiaId: 126436, measurementType }));
       expectParity(first);
       expect(first.structuredContent).toMatchObject({
@@ -563,7 +575,7 @@ describe('trait measurementType filter', () => {
     'matches nothing for untrimmed or absent type %j and says how to recover',
     async (measurementType) => {
       fakeFetch(
-        withStatus(null, () => Response.json([chain('Body size', 'Unit'), attr(null), {}])),
+        withStatus(statusForOne, () => Response.json([chain('Body size', 'Unit'), attr(null), {}])),
       );
       const result = await settle(traits({ aphiaId: 1, measurementType }));
       expectParity(result);
@@ -580,7 +592,9 @@ describe('trait measurementType filter', () => {
     },
   );
   it.each(['', '   '])('treats blank filter %j as unset', async (measurementType) => {
-    fakeFetch(withStatus(null, () => Response.json([chain('Body size', 'Unit'), attr('Sex')])));
+    fakeFetch(
+      withStatus(statusForOne, () => Response.json([chain('Body size', 'Unit'), attr('Sex')])),
+    );
     const result = await settle(traits({ aphiaId: 1, measurementType }));
     expectParity(result);
     expect(result.structuredContent).toMatchObject({ totalCount: 3, unfilteredCount: 3 });
@@ -609,7 +623,7 @@ describe('trait measurementType filter', () => {
     'filters only the tree returned for includeInherited=%s',
     async (includeInherited) => {
       fakeFetch(
-        withStatus(null, (url) =>
+        withStatus(statusForOne, (url) =>
           Response.json(
             url.searchParams.get('include_inherited') === 'true'
               ? [chain('Body size', 'Unit'), attr('Sex'), chain('Body size', 'Unit')]
@@ -631,7 +645,7 @@ describe('trait measurementType filter', () => {
   it.each([true, false])(
     'keeps the inheritance notice for an empty tree with inheritance=%s',
     async (includeInherited) => {
-      fakeFetch(withStatus(null, () => new Response(null, { status: 204 })));
+      fakeFetch(withStatus(statusForOne, () => new Response(null, { status: 204 })));
       const result = await settle(
         traits({ aphiaId: 1, includeInherited, measurementType: 'Body size' }),
       );
@@ -651,30 +665,178 @@ describe('trait measurementType filter', () => {
   });
 });
 
+describe('submitted taxon existence', () => {
+  it.each([
+    {
+      tool: getTraitsTool,
+      input: { includeInherited: false, measurementType: 'Body size' },
+      echo: { includeInherited: false, measurementType: 'Body size' },
+      empty: { traits: [], unfilteredCount: 0 },
+    },
+    {
+      tool: getDistributionsTool,
+      input: { recordStatus: ' VALID ' },
+      echo: { recordStatus: 'valid' },
+      empty: { distributions: [], unfilteredCount: 0, filteredCount: 0 },
+    },
+    {
+      tool: getDistributionsTool,
+      input: { includeSynonyms: true },
+      echo: {},
+      empty: {
+        distributions: [],
+        unfilteredCount: 0,
+        filteredCount: 0,
+        synonymUnion: {
+          acceptedAphiaId: null,
+          synonymOffset: 0,
+          synonymAphiaIds: [],
+          nextSynonymOffset: null,
+          failedSynonyms: [],
+        },
+      },
+    },
+    {
+      tool: crosswalkIdTool,
+      input: { type: 'tsn' },
+      echo: { requestedTypes: ['tsn'] },
+      empty: {
+        ids: {},
+        typeTotals: {},
+        failedTypes: [],
+        guidance: expect.stringContaining('worms_resolve_taxon'),
+      },
+    },
+  ])(
+    '$tool.name short-circuits a confirmed taxon miss with effective options $input',
+    async ({ tool, input, echo, empty }) => {
+      const network = fakeFetch(() => new Response(null, { status: 204 }));
+      const result = await settle(
+        runToolContract(tool, { aphiaId: 999999999, resultOffset: 3, ...input }),
+      );
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        aphiaId: 999999999,
+        found: false,
+        resultOffset: 3,
+        returnedCount: 0,
+        totalCount: 0,
+        nextResultOffset: null,
+        echo,
+        ...empty,
+      });
+      if (tool !== crosswalkIdTool)
+        expect(result.structuredContent).toHaveProperty(
+          'notice',
+          expect.stringContaining('worms_resolve_taxon'),
+        );
+      expect(result.structuredContent).not.toHaveProperty('statusError');
+      expect(contentText(result)).toContain('WoRMS has no record for AphiaID 999999999.');
+      expect(contentText(result)).not.toMatch(
+        /inheritance enabled|without filters|its own rows|worms_get_taxon/,
+      );
+      expect(network.calls.map((url) => url.pathname)).toEqual([
+        '/rest/AphiaRecordByAphiaID/999999999',
+      ]);
+    },
+  );
+
+  it.each([getTraitsTool, getDistributionsTool])(
+    '$name confirms a present taxon with no evidence',
+    async (tool) => {
+      const network = fakeFetch(
+        withStatus(record(1, { status: 'accepted' }), () => new Response(null, { status: 204 })),
+      );
+      const result = await settle(runToolContract(tool, { aphiaId: 1 }));
+      expectEvidence(result);
+      expect(result.structuredContent).toMatchObject({
+        found: true,
+        totalCount: 0,
+        nextResultOffset: null,
+      });
+      expect(contentText(result)).not.toContain('worms_resolve_taxon');
+      expect(network.calls).toHaveLength(2);
+    },
+  );
+});
+
 describe('external crosswalk evidence', () => {
-  it.each(['NCBI', ' ncbi '])('normalizes input identifier vocabulary %j', async (type) => {
-    const network = fakeFetch((url) => {
-      expect(url.searchParams.get('type')).toBe('ncbi');
-      return Response.json(['0001']);
+  it.each([
+    { aphiaId: 836033, type: 'tsn', ids: [] },
+    { aphiaId: 836033, type: 'gisd', ids: [] },
+    { aphiaId: 140656, type: 'tsn', ids: ['79868'] },
+    { aphiaId: 140656, type: 'gisd', ids: ['797'] },
+    { aphiaId: 1804094, type: 'tsn', ids: [] },
+  ])('retains the $type evidence attached to AphiaID $aphiaId', async ({ aphiaId, type, ids }) => {
+    const taxon =
+      aphiaId === 836033
+        ? record(aphiaId, { status: 'accepted' })
+        : aphiaId === 140656
+          ? record(aphiaId, { status: 'superseded combination', valid_AphiaID: 836033 })
+          : record(aphiaId, { status: 'alternative representation', valid_AphiaID: 140480 });
+    const network = fakeFetch(
+      withStatus(taxon, (url) => {
+        expect(url.searchParams.get('type')).toBe(type);
+        return Response.json(ids);
+      }),
+    );
+    const result = await settle(runToolContract(crosswalkIdTool, { aphiaId, type }));
+    expectEvidence(result);
+    expect(result.structuredContent).toMatchObject({
+      found: true,
+      ids: { [type]: ids },
+      typeTotals: { [type]: ids.length },
     });
+    expect(result.structuredContent).toHaveProperty(
+      'guidance',
+      ids.length ? null : expect.stringContaining(`${type}; call worms_get_synonyms`),
+    );
+    if (aphiaId !== 836033) {
+      const linked = aphiaId === 140656 ? 836033 : 140480;
+      const description = aphiaId === 140656 ? 'accepted AphiaID' : 'preferred AphiaID';
+      expect(result.structuredContent).toHaveProperty(
+        'notice',
+        expect.stringContaining(
+          `${description} ${linked}. Call worms_crosswalk_id with aphiaId: ${linked} and type: ${type}`,
+        ),
+      );
+    }
+    expect(network.calls.map((url) => url.pathname)).toEqual([
+      `/rest/AphiaRecordByAphiaID/${aphiaId}`,
+      `/rest/AphiaExternalIDByAphiaID/${aphiaId}`,
+    ]);
+  });
+  it.each(['NCBI', ' ncbi '])('normalizes input identifier vocabulary %j', async (type) => {
+    const network = fakeFetch(
+      withStatus(statusForOne, (url) => {
+        expect(url.searchParams.get('type')).toBe('ncbi');
+        return Response.json(['0001']);
+      }),
+    );
     const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1, type }));
     expectParity(result);
     expect(result.structuredContent).toMatchObject({ type: 'ncbi', ids: { ncbi: ['0001'] } });
-    expect(network.calls).toHaveLength(1);
+    expect(network.calls).toHaveLength(2);
+    expect(network.starts[1]! - network.starts[0]!).toBe(500);
   });
   it('requests every supported type explicitly in fixed order, retaining opaque IDs and empty successes', async () => {
-    const network = fakeFetch((url) => {
-      expect(url.pathname).toBe('/rest/AphiaExternalIDByAphiaID/1');
-      return url.searchParams.get('type') === 'iucn'
-        ? new Response(null, { status: 204 })
-        : Response.json(['0001', 'urn:lsid:test:1', '0001']);
-    });
+    const network = fakeFetch(
+      withStatus(statusForOne, (url) => {
+        expect(url.pathname).toBe('/rest/AphiaExternalIDByAphiaID/1');
+        return url.searchParams.get('type') === 'iucn'
+          ? new Response(null, { status: 204 })
+          : Response.json(['0001', 'urn:lsid:test:1', '0001']);
+      }),
+    );
     const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
     expectParity(result);
-    expect(network.calls.map((url) => url.searchParams.get('type'))).toEqual(externalTypes);
+    expect(network.calls.map((url) => url.searchParams.get('type'))).toEqual([
+      null,
+      ...externalTypes,
+    ]);
     expect(result.structuredContent).toMatchObject({
       direction: 'forward',
-      found: null,
+      found: true,
       record: null,
       ids: { algaebase: ['0001', 'urn:lsid:test:1', '0001'], iucn: [] },
       failedTypes: [],
@@ -684,15 +846,25 @@ describe('external crosswalk evidence', () => {
       expect((network.starts[i] ?? 0) - (network.starts[i - 1] ?? 0)).toBeGreaterThanOrEqual(500);
   });
   it('returns classified partial outages separately from successful absence', async () => {
-    fakeFetch((url) =>
-      url.searchParams.get('type') === 'bold'
-        ? new Response(null, { status: 403 })
-        : new Response(null, { status: 204 }),
+    fakeFetch(
+      withStatus(statusForOne, (url) =>
+        url.searchParams.get('type') === 'bold'
+          ? new Response(null, { status: 403 })
+          : url.searchParams.get('type') === 'tsn'
+            ? Response.json(['79868'])
+            : new Response(null, { status: 204 }),
+      ),
     );
-    const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
+    const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1, resultOffset: 10 }));
     expectParity(result);
     expect(result.structuredContent).toMatchObject({
-      ids: { algaebase: [], gisd: [] },
+      ids: { algaebase: [], gisd: [], tsn: [] },
+      typeTotals: { algaebase: 0, gisd: 0, tsn: 1 },
+      totalCount: 1,
+      returnedCount: 0,
+      nextResultOffset: null,
+      guidance:
+        'No identifiers were returned for algaebase, dyntaxa, fishbase, iucn, lsid, ncbi, gisd; call worms_get_synonyms with aphiaId: 1, then worms_crosswalk_id on the synonym AphiaIDs using the same identifier types.',
       failedTypes: [
         {
           type: 'bold',
@@ -706,9 +878,46 @@ describe('external crosswalk evidence', () => {
       notice: expect.stringContaining('bold'),
     });
     expect(result.structuredContent).not.toHaveProperty('ids.bold');
+    expect(result.structuredContent).not.toHaveProperty('typeTotals.bold');
+  });
+  it.each([403, 503])(
+    'keeps forward identifiers when the optional status read returns HTTP %i',
+    async (status) => {
+      const reason = status === 403 ? 'upstream_access_denied' : 'upstream_unavailable';
+      const network = fakeFetch((url) =>
+        url.pathname === '/rest/AphiaRecordByAphiaID/1'
+          ? new Response(null, { status })
+          : Response.json(['79868']),
+      );
+      const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1, type: 'tsn' }));
+      expectParity(result);
+      expect(result.structuredContent).toMatchObject({
+        found: null,
+        ids: { tsn: ['79868'] },
+        typeTotals: { tsn: 1 },
+        guidance: null,
+        statusError: { reason, recovery: declared(crosswalkIdTool, reason).recovery },
+      });
+      expect(network.calls.map((url) => url.pathname)).toEqual([
+        '/rest/AphiaRecordByAphiaID/1',
+        ...(status === 503 ? ['/rest/AphiaRecordByAphiaID/1'] : []),
+        '/rest/AphiaExternalIDByAphiaID/1',
+      ]);
+    },
+  );
+  it('rejects the forward status read atomically', async () => {
+    const network = fakeFetch(() => new Response(null, { status: 422 }));
+    const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1, type: 'tsn' }));
+    const hint = declared(crosswalkIdTool, 'upstream_rejected').recovery;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'upstream_rejected', recovery: { hint } } },
+    });
+    expect(contentText(result)).toContain(hint);
+    expect(network.calls.map((url) => url.pathname)).toEqual(['/rest/AphiaRecordByAphiaID/1']);
   });
   it('throws the fixed-order first failure when every type fails', async () => {
-    fakeFetch(() => new Response(null, { status: 403 }));
+    fakeFetch(withStatus(statusForOne, () => new Response(null, { status: 403 })));
     const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({
@@ -726,15 +935,17 @@ describe('external crosswalk evidence', () => {
   it.each([400, 422])(
     'rejects HTTP %i atomically after earlier success and cancels queued types',
     async (status) => {
-      const network = fakeFetch((_url, _init, index) =>
-        index === 0 ? Response.json(['1']) : new Response('untrusted private body', { status }),
+      const network = fakeFetch(
+        withStatus(statusForOne, (_url, _init, index) =>
+          index === 1 ? Response.json(['1']) : new Response('untrusted private body', { status }),
+        ),
       );
       const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({
         error: { data: { reason: 'upstream_rejected' } },
       });
-      expect(network.calls).toHaveLength(2);
+      expect(network.calls).toHaveLength(3);
       expect(JSON.stringify(result)).not.toContain('untrusted private body');
     },
   );
@@ -760,6 +971,7 @@ describe('external crosswalk evidence', () => {
         ids: {},
         failedTypes: [],
       });
+      expect(result.structuredContent).not.toHaveProperty('statusError');
       expect(network.calls).toHaveLength(1);
     },
   );
@@ -782,8 +994,10 @@ describe('external crosswalk evidence', () => {
     });
   });
   it('discards earlier successes when the whole-tool deadline expires', async () => {
-    const network = fakeFetch((_url, init, index) =>
-      index === 0 ? Response.json(['0001']) : hang(init),
+    const network = fakeFetch(
+      withStatus(statusForOne, (_url, init, index) =>
+        index === 1 ? Response.json(['0001']) : hang(init),
+      ),
     );
     const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
     expect(result.isError).toBe(true);
@@ -795,26 +1009,36 @@ describe('external crosswalk evidence', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(network.calls).toHaveLength(stopped);
   });
-  it('cancels queued and in-flight lookups without returning partial evidence', async () => {
-    const abort = new AbortController();
-    const network = fakeFetch((_url, init) => hang(init));
-    const pending = runToolContract(
-      crosswalkIdTool,
-      { aphiaId: 1 },
-      { context: { signal: abort.signal } },
-    );
-    await vi.advanceTimersByTimeAsync(1);
-    expect(network.calls).toHaveLength(1);
-    abort.abort();
-    const result = await settle(pending);
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      error: { code: JsonRpcErrorCode.RequestCancelled },
-    });
-    expect(JSON.stringify(result.content)).toContain('cancel');
-    await vi.advanceTimersByTimeAsync(50_000);
-    expect(network.calls).toHaveLength(1);
-  });
+  it.each([1, 3])(
+    'cancels after %i requests without returning partial evidence',
+    async (requestCount) => {
+      const abort = new AbortController();
+      const network = fakeFetch((_url, init, index) =>
+        requestCount === 1 || index >= 2
+          ? hang(init)
+          : index === 0
+            ? Response.json(statusForOne)
+            : Response.json(['001']),
+      );
+      const pending = runToolContract(
+        crosswalkIdTool,
+        { aphiaId: 1 },
+        { context: { signal: abort.signal } },
+      );
+      await vi.advanceTimersByTimeAsync(requestCount === 1 ? 1 : 1001);
+      expect(network.calls).toHaveLength(requestCount);
+      abort.abort();
+      const result = await settle(pending);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: JsonRpcErrorCode.RequestCancelled },
+      });
+      expect(result.structuredContent).not.toHaveProperty('ids');
+      expect(JSON.stringify(result.content)).toContain('cancel');
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(network.calls).toHaveLength(requestCount);
+    },
+  );
 });
 
 describe('default-mode characterization', () => {
@@ -1043,21 +1267,24 @@ describe('taxonomic status on evidence tools', () => {
       ]);
     },
   );
-  it.each(names.flatMap((name) => statusRows.map(([label, row]) => ({ name, label, row }))))(
-    '$name adds no status notice for a $label record',
-    async ({ name, row }) => {
-      upstream({
-        records: row ? { 1: row } : {},
-        distributions: { 1: [{ locality: 'A' }] },
-        attributes: { 1: [{ measurementType: 'Body size' }] },
-        classification: { 1: { AphiaID: 1 } },
-      });
-      const result = await call(name, 1);
-      expectParity(result);
-      expect(result.structuredContent).not.toHaveProperty('notice');
-      expect(result.structuredContent).not.toHaveProperty('statusError');
-    },
-  );
+  it.each(
+    names.flatMap((name) =>
+      statusRows
+        .filter(([, row]) => row || name === 'classification')
+        .map(([label, row]) => ({ name, label, row })),
+    ),
+  )('$name adds no status notice for a $label record', async ({ name, row }) => {
+    upstream({
+      records: row ? { 1: row } : {},
+      distributions: { 1: [{ locality: 'A' }] },
+      attributes: { 1: [{ measurementType: 'Body size' }] },
+      classification: { 1: { AphiaID: 1 } },
+    });
+    const result = await call(name, 1);
+    expectParity(result);
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect(result.structuredContent).not.toHaveProperty('statusError');
+  });
   it.each(names)(
     '%s points to worms_get_taxon when a non-accepted record links no accepted taxon',
     async (name) => {
@@ -1109,6 +1336,7 @@ describe('taxonomic status on evidence tools', () => {
           retryable,
         },
       });
+      if (name !== 'classification') expect(result.structuredContent).toHaveProperty('found', null);
       expect(result.structuredContent).not.toHaveProperty('notice');
       expect(
         (result.structuredContent as Record<string, unknown[]>)[
@@ -1175,7 +1403,8 @@ describe('recovery hints after a forced timeout or outage', () => {
   it.each(
     thrown.flatMap((call) => (['timeout', 503] as const).map((failure) => ({ ...call, failure }))),
   )('$name throws its own next step after a forced $failure', async ({ tool, run, failure }) => {
-    fakeFetch((_url, init) => forced(failure, init));
+    const unavailable = (_url: URL, init: RequestInit | undefined) => forced(failure, init);
+    fakeFetch(tool === crosswalkIdTool ? withStatus(statusForOne, unavailable) : unavailable);
     const result = await settle(run());
     const reason = reasonOf(failure);
     const hint = declared(tool, reason).recovery;
@@ -1198,8 +1427,10 @@ describe('recovery hints after a forced timeout or outage', () => {
   it.each(['timeout', 503] as const)(
     'worms_crosswalk_id records a forced %s on one type, keeping the others, with its guidance on both surfaces',
     async (failure) => {
-      fakeFetch((url, init) =>
-        url.searchParams.get('type') === 'bold' ? forced(failure, init) : Response.json(['0001']),
+      fakeFetch(
+        withStatus(statusForOne, (url, init) =>
+          url.searchParams.get('type') === 'bold' ? forced(failure, init) : Response.json(['0001']),
+        ),
       );
       const result = await settle(runToolContract(crosswalkIdTool, { aphiaId: 1 }));
       expectParity(result);
@@ -1535,23 +1766,26 @@ describe('distribution synonym union', () => {
     });
     const result = await union({ aphiaId: 836033 });
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({ error: { data: { reason } } });
+    const hint = declared(getDistributionsTool, reason).recovery;
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason, recovery: { hint } } },
+    });
+    expect(contentText(result)).toContain(hint);
     expect(result.structuredContent).not.toHaveProperty('distributions');
+    if (path === '/rest/AphiaRecordByAphiaID/836033') expect(network.calls).toHaveLength(1);
     expect(network.calls.map((url) => url.pathname)).not.toContain(
       '/rest/AphiaDistributionsByAphiaID/605705',
     );
   });
-  it.each([
-    ['a non-accepted record without a link', record(5, { status: 'nomen dubium' })],
-    ['a missing record', undefined],
-  ])('returns only the submitted rows for %s', async (_label, row) => {
+  it('returns the submitted rows for a present taxon with no accepted link', async () => {
     const network = upstream({
-      records: row ? { 5: row } : {},
+      records: { 5: record(5, { status: 'nomen dubium' }) },
       distributions: { 5: rows(5, 2) },
     });
     const result = await union({ aphiaId: 5 });
     expectParity(result);
     expect(result.structuredContent).toMatchObject({
+      found: true,
       distributions: tagged(5, 2),
       synonymUnion: {
         acceptedAphiaId: null,
@@ -1568,17 +1802,15 @@ describe('distribution synonym union', () => {
       '/rest/AphiaDistributionsByAphiaID/5',
     ]);
   });
-  it.each([
-    ['a non-accepted record without a link', record(5, { status: 'nomen dubium' })],
-    ['a missing record', undefined],
-  ])('returns an empty window past the end for %s', async (_label, row) => {
+  it('returns an empty window past the end for a present taxon with no accepted link', async () => {
     const network = upstream({
-      records: row ? { 5: row } : {},
+      records: { 5: record(5, { status: 'nomen dubium' }) },
       distributions: { 5: rows(5, 2) },
     });
     const result = await union({ aphiaId: 5, synonymOffset: 10 });
     expectParity(result);
     expect(result.structuredContent).toMatchObject({
+      found: true,
       distributions: [],
       unfilteredCount: 0,
       totalCount: 0,
